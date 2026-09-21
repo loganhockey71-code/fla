@@ -1,0 +1,28 @@
+name: research-poll
+# Polls every research source that is due (each has its own interval: feeds 5m, Congress 12m, FRED 45m, markets 5m).
+# MANUAL by default. The 30-minute `worker-tick` already polls research too, just at a coarser cadence.
+# To poll every 5 minutes for free, make the repo PUBLIC and uncomment the schedule. On a PRIVATE repo, 5-minute
+# runs would burn the 2,000 free minutes/month in about a week and pause all your workflows - use `research-loop`
+# on your own machine instead:  python -m crypto_ai.cli research-loop
+on:
+  workflow_dispatch: {}
+  # schedule:
+  #   - cron: "*/5 * * * *"
+
+concurrency: { group: research-poll, cancel-in-progress: false }
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: worker/requirements.txt }
+      - run: pip install -r worker/requirements.txt
+      - run: python -m crypto_ai.cli research
+        working-directory: worker
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}

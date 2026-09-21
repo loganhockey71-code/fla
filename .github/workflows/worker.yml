@@ -1,0 +1,27 @@
+name: worker-tick
+# Collects prices, reads news, detects sudden moves, scores old predictions, makes new ones, updates the fake account.
+# FREE-MINUTES BUDGET: a private repo gets 2,000 Actions minutes/month and each run bills ~2 min, so hourly (~1,500/month)
+# fits. If you make the repo PUBLIC, minutes are unlimited: change the cron to "*/5 * * * *" for near-real-time.
+# (Scores/predictions use exact historical prices, so a coarser schedule loses no accuracy: only sudden-move alerts get slower.)
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch: {}
+
+concurrency: { group: worker-tick, cancel-in-progress: false }
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: worker/requirements.txt }
+      - run: pip install -r worker/requirements.txt
+      - run: python -m crypto_ai.cli tick
+        working-directory: worker
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}

@@ -1,0 +1,85 @@
+# Crypto AI Lab — does this AI predictor actually work?
+
+Private **paper-trading** app for BTC, ETH and XRP. It makes 24h/48h predictions with per-coin LightGBM models, "trades" $1,000 of **fake** money at **real** Coinbase prices (fees, spread and slippage included), scores every prediction when its window ends, and shows whether the results are distinguishable from luck at 30/60/90/180 days.
+
+There is no exchange or brokerage code anywhere. Nothing here can place a real order.
+
+```
+supabase/schema.sql   database (run once)          web/     Next.js dashboard  -> Vercel (free)
+worker/crypto_ai/     Python worker + ML            .github/workflows/  free scheduler for the worker
+```
+
+## Setup (~15 min, $0)
+
+1. **Supabase**: create a free project. SQL Editor → run `supabase/schema.sql`, then `supabase/schema_research.sql`, then `supabase/schema_manual.sql`. Copy the *Transaction pooler* connection string (Project Settings → Database).
+2. **Train the first models** (once, on your machine):
+   ```bash
+   cd worker
+   pip install -r requirements.txt
+   cp ../.env.example ../.env        # fill in DATABASE_URL
+   python -m crypto_ai.cli research --force   # FRED history + Congress + feeds + prediction markets (needs FRED_API_KEY, CONGRESS_API_KEY in .env)
+   python -m crypto_ai.cli train      # downloads ~270 days of free Coinbase candles, ~3 min
+   python -m crypto_ai.cli tick       # first predictions + paper trades
+   ```
+3. **Keep it running** — pick one:
+   - *GitHub Actions* (free): push this folder to a repo, add secrets `DATABASE_URL`, `FRED_API_KEY`, `CONGRESS_API_KEY`. `worker.yml` runs `tick` every 30 min. (Private repo = 2,000 free min/month; 30-min cadence fits.)
+   - *Your own machine* (near real-time): `python -m crypto_ai.cli loop --every 300`
+4. **Dashboard**: import the repo in Vercel, root directory `web`, env vars `DATABASE_URL` and `APP_PASSWORD` (not the research keys: the dashboard never uses them). The site refuses to serve without a password.
+
+Local dashboard: `cd web && npm install && npm run dev` (needs `DATABASE_URL`).
+
+## What one `tick` does
+collect price/spread/order book/flow → ingest news → detect sudden moves → close paper trades whose horizon ended → score predictions whose window ended → make new predictions if due (default every 6 h) → act on BUY/SELL → snapshot portfolio → recompute metrics.
+
+## Manual paper trading (the Trade tab)
+Buy and sell BTC/ETH/XRP any time with fake money: `$` amount buy (with quick $25/$50/$100/Max), and Sell 25% / 50% / all. Same live price, real spread, 0.4% fee and 0.1% slippage as the AI, no leverage, spot only. It is a **separate account** (its own $1,000) so your trades never change the AI's results. The AI's current BUY/HOLD/SELL and confidence show beside each coin, and every manual trade stores what the AI was saying at that moment. Manual positions never close automatically; you sell them.
+
+## Research layer (free, read-only)
+Sources and trust tier (1 = most trusted) - polled on their own schedule by `python -m crypto_ai.cli research` / `research-loop`:
+
+| Tier | Sources | Interval |
+|---|---|---|
+| 1 official government | SEC (press, statements), Federal Reserve (press, speeches), CFTC (press, enforcement), Congress.gov API, FRED API | 5 min / 5 / 5 / 12 / 45 |
+| 2 official project | XRP Ledger `rippled` releases, Ethereum Foundation blog, go-ethereum releases | 5 min |
+| 3 financial news | CNBC Finance, MarketWatch | 10 min |
+| 4 crypto media | CoinDesk, Cointelegraph, Decrypt | 5 min |
+| 5 prediction markets | Polymarket, Kalshi (public endpoints only; no accounts, wallets or orders) | 5 min |
+| 6 social/unverified | never ingested | - |
+
+- **One story = one event.** Rewrites of the same headline are folded into one `research_events` row (`event_duplicates` keeps the copies). Copies inside one source family (five outlets rewriting one press release) add **zero** independent confirmations; a primary source + press, or + a market, counts as 2. A more credible source arriving later becomes the origin.
+- **FRED** (`macro_data`): fed funds, 2y/10y yields, CPI, core CPI, unemployment, payrolls, jobless claims from 2019. Each value is only visible from `available_at` (observation date + publication lag), so the model never sees a number before the market could have.
+- **Congress.gov** (`legislative_items`): crypto/stablecoin/SEC/CFTC/market-structure bills with actions, committees, amendments, hearings and House votes. A state hash means an unchanged bill never produces a new event.
+- **Prediction markets** (`prediction_market_snapshots`): implied probability, volume and liquidity are stored; a >=8-point move creates an event. They are **one feature only** and never trigger BUY/SELL.
+- **How research reaches the model:** two models per coin run side by side and are both logged and scored. `market` (candles only) paper-trades. `research` (same + macro + event features) is *shadow*: it never trades until you choose to (`trade_variant` setting). Every prediction stores the exact research snapshot that existed at that instant (`predictions.research_features`). The Performance page pairs the two by `run_id` and tests whether the difference is more than noise.
+- Event features are `NaN` (unknown) before the first event was detected - history is never faked - so the research model will match the market model until real research history accumulates.
+
+## Rules that keep the test honest
+| Rule | How it is enforced |
+|---|---|
+| Predictions can't be edited | DB triggers reject UPDATE/DELETE/TRUNCATE on `predictions` and `prediction_results`; closed trades are frozen too |
+| No look-ahead | features use only closed candles (`asof` = candle close); `tests/test_core.py` rewrites the future and asserts past features don't change; DB `CHECK (data_cutoff <= created_at)` |
+| Exactly what was known | each prediction stores the full feature vector, model version and data cutoff |
+| Backtest ≠ live | backtests live only in `model_versions.backtest_metrics` and are shown in a separate, labelled section |
+| No fake precision | calibration is centered and can never flip the model; "high confidence" (≥75%) is reported separately and will usually be empty |
+| Luck check | dashboard reports a p-value vs a coin flip and a verdict ("Too early" below 100 scored predictions) |
+| Free-source hierarchy | SEC/Fed/CFTC/Congress = `official`, project blogs = `project`, crypto RSS = `media` (importance capped at 65). No social/rumor feeds are ingested |
+
+## Design decisions you may want to change
+- **Spot, long-only.** BUY opens a long that exits at the horizon; SELL can only close an existing long (otherwise logged as *skipped*). Shorting would need leverage/margin, which is excluded.
+- **Position limits**: 10% of portfolio (20% if confidence ≥ 75%), capped by cash. One open position per coin per horizon.
+- **Signal threshold 52%** (Settings). Calibrated probabilities from crypto models sit near 50%; at 55% the current models almost never trade, which would leave nothing to test.
+- **Order-book / spread / buy-sell pressure** are collected and stored with every prediction, but v1 models train only on candle features: Coinbase has no free history of order-book data, so training on it would mean training on nothing. After a few months of logged snapshots they can be added as model inputs.
+- **Coinbase, not Binance**: Binance.com blocks US IPs. REST polling is used instead of WebSockets so it works on free schedulers.
+- Sudden-move detection reads 1-minute candles, so a 30-min scheduled run still sees moves from the last 90 minutes; run `loop` locally for real-time alerts.
+
+## Commands
+```bash
+python -m crypto_ai.cli train [--days N]   # new model version per coin (old versions kept)
+python -m crypto_ai.cli tick               # one full cycle
+python -m crypto_ai.cli loop --every 300   # forever
+python -m crypto_ai.cli status             # row counts
+python -m crypto_ai.cli research [--force] [--source fred_api]   # poll due research sources
+python -m crypto_ai.cli research-loop      # forever, each source at its own interval
+python -m crypto_ai.cli selfcheck         # read-only end-to-end check of the running system (also see the /health page)
+cd worker && python -m pytest              # 30 tests; set TEST_DATABASE_URL to a FRESH SCRATCH Postgres to also run the dedupe + full paper-trading e2e tests
+```

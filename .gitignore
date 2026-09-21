@@ -1,0 +1,11 @@
+.env
+.env.local
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+.next/
+.venv/
+worker/logs/
+.claude/settings.local.json
+web/tsconfig.tsbuildinfo
