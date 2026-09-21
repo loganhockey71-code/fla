@@ -2,7 +2,6 @@ import { safe, sql, getSettings } from "@/lib/db";
 import { pct, when } from "@/lib/format";
 import { Empty, Pill, SetupError, Stat } from "@/components/Ui";
 
-export const dynamic = "force-dynamic";
 
 const CLASS: Record<string, string> = {
   event_shock_missed: "an event after the call pointed the way price moved", macro_release_in_window: "a big macro release landed in the window",
@@ -14,7 +13,7 @@ const CLASS: Record<string, string> = {
 const STATUS = { confirmed: "bad", candidate: "warn", insufficient: "muted", noise: "muted" } as const;
 const DECISION = { promoted: "good", rejected: "warn", insufficient_data: "muted" } as const;
 
-export default async function Learning() {
+export default async function LearningView() {
   const { data, error } = await safe(async () => {
     const db = sql();
     const cfg = await getSettings();
@@ -31,13 +30,13 @@ export default async function Learning() {
     ]);
     return { cfg, c, pmN, classes, recent, patterns, models, challenges };
   });
-  if (error || !data) return <><h1>Learning</h1><SetupError error={error ?? "unknown"} /></>;
+  if (error || !data) return <><h2 className="viewtitle">Learning</h2><SetupError error={error ?? "unknown"} /></>;
   const { cfg, c, pmN, classes, recent, patterns, models, challenges } = data;
   const shown = patterns.filter((p) => p.status !== "insufficient");
 
   return (
     <>
-      <h1>Self-learning</h1>
+      <h2 className="viewtitle">Self-learning</h2>
       <p className="sub">Every wrong prediction gets a post-mortem. Patterns are only trusted after many examples. A model is only replaced after it beats the current one on data neither has seen. <b>One mistake never changes anything.</b></p>
 
       <div className="grid g4">

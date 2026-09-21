@@ -5,26 +5,29 @@ import { liveQuote } from "@/lib/quotes";
 import { pct, pctPts, price, signedUsd, tone, usd, when } from "@/lib/format";
 import { Empty, Pill, SetupError, Stat } from "@/components/Ui";
 import OrderForms, { QuickSell, SellEverything } from "@/components/OrderForms";
+import CashPlanPanel from "@/components/CashPlanPanel";
+import { pendingPlan, recentDecision } from "@/lib/cashplan_db";
 
-export const dynamic = "force-dynamic";
 
 type Advice = { predictions?: { horizon_h: number; signal: string; confidence: number }[] };
 
-export default async function Trade() {
+export default async function MyTradingView() {
   const { data, error } = await safe(async () => {
     const db = sql();
     const cfg = await getSettings();
-    const [quotes, preds, trades, stored, signals] = await Promise.all([
+    const [quotes, preds, trades, stored, signals, plan, decided] = await Promise.all([
       Promise.all(COINS.map((c) => liveQuote(c))),
       latestPredictions(),
       db`select * from paper_trades where account = 'manual' order by id desc limit 500`,
       db`select distinct on (symbol) symbol, price from market_data order by symbol, ts desc`,
       latestSignals(),
+      pendingPlan(db),
+      recentDecision(db),
     ]);
-    return { cfg, quotes, preds, trades, stored, signals };
+    return { cfg, quotes, preds, trades, stored, signals, plan, decided };
   });
-  if (error || !data) return <><h1>Manual trading</h1><SetupError error={error ?? "unknown"} /></>;
-  const { cfg, quotes, preds, trades, stored, signals } = data;
+  if (error || !data) return <><h2 className="viewtitle">Manual trading</h2><SetupError error={error ?? "unknown"} /></>;
+  const { cfg, quotes, preds, trades, stored, signals, plan, decided } = data;
 
   const q = Object.fromEntries(COINS.map((c, i) => [c, quotes[i]])) as Record<Coin, (typeof quotes)[number]>;
   const mids = Object.fromEntries(COINS.map((c, i) => [c, quotes[i]?.mid ?? (stored.find((r) => r.symbol === c)?.price as number) ?? 0])) as Record<Coin, number>;
@@ -40,8 +43,21 @@ export default async function Trade() {
 
   return (
     <>
-      <h1>Manual paper trading</h1>
+      <h2 className="viewtitle">Manual paper trading</h2>
       <p className="sub">Buy and sell any time with fake money at live Coinbase prices (same {cfg.trading_fee_pct}% fee, {cfg.slippage_pct}% slippage and real spread as the AI). This is your own account, completely separate from the AI's test results. Everything happens on this page.</p>
+
+      {!plan && decided && (() => {
+        const ex = decided.executed as { bought?: { coin: string; usd: number }[] } | null;
+        const bought = ex?.bought ?? [];
+        const kept = decided.chosen === "dismissed" || !bought.length;
+        return (
+          <div className="cashplan done" role="status">
+            <div className="cp-kicker">Cash plan</div>
+            <div className="cp-big">{kept ? `Okay: the ${usd(decided.amount as number)} stays as cash.` : `Done: bought ${bought.map((b) => `${usd(b.usd)} of ${b.coin}`).join(" and ")}.`}</div>
+            <div className="why">{decided.chosen === "dismissed" ? "You chose to keep it as cash." : `You confirmed the ${decided.chosen} option. Nothing else was bought.`}</div>
+          </div>);
+      })()}
+      {plan && <CashPlanPanel id={plan.id as number} soldCoins={plan.sold_coins as string[]} plan={plan.plan as never} cash={cash} />}
 
       <div className="grid g4">
         <Stat label="Cash" value={usd(cash)} sub={`started with ${usd(cfg.starting_balance, 0)}`} />

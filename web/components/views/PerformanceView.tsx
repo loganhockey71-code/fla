@@ -5,7 +5,6 @@ import { MILESTONES, Scored, binomialP, compareVariants, verdict } from "@/lib/s
 import { Empty, Pill, SetupError } from "@/components/Ui";
 import { AccuracyBars, TimeChart } from "@/components/Charts";
 
-export const dynamic = "force-dynamic";
 const DAY = 86400_000;
 
 type R = { directional_correct: boolean; high_confidence: boolean; target_time: Date; created_at: Date };
@@ -18,7 +17,7 @@ function cumulative(rows: R[]) {
   });
 }
 
-export default async function Performance() {
+export default async function PerformanceView() {
   const { data, error } = await safe(async () => {
     const cfg = await getSettings();
     const db = sql();
@@ -30,7 +29,7 @@ export default async function Performance() {
     ]);
     return { cfg, perf, allResults: results as unknown as (R & Scored)[], equity, closed, models };
   });
-  if (error || !data) return <><h1>Performance</h1><SetupError error={error ?? "unknown"} /></>;
+  if (error || !data) return <><h2 className="viewtitle">Performance</h2><SetupError error={error ?? "unknown"} /></>;
   const { cfg, perf, allResults, equity, closed, models } = data;
   const results = allResults.filter((r) => r.variant === "market");   // headline numbers = the model that trades
 
@@ -72,7 +71,7 @@ export default async function Performance() {
 
   return (
     <>
-      <h1>Performance</h1>
+      <h2 className="viewtitle">Performance</h2>
       <p className="sub">LIVE results only, unless a section says BACKTEST. {results.length} scored predictions{first ? ` over ${elapsedDays.toFixed(1)} days` : ""}.</p>
 
       <h2>Do we have an edge? Checkpoints</h2>

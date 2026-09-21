@@ -3,7 +3,6 @@ import { safe, sql } from "@/lib/db";
 import { when } from "@/lib/format";
 import { Empty, Pill, SetupError } from "@/components/Ui";
 
-export const dynamic = "force-dynamic";
 
 const CATS = ["regulation", "legislation", "fed", "interest_rates", "inflation", "ETF", "lawsuit", "enforcement", "exchange", "hack",
   "whale_activity", "partnership", "token_or_network_update", "macro", "adoption", "other"];
@@ -12,7 +11,7 @@ type Q = { coin?: string; cat?: string; min?: string; kind?: string; view?: stri
 
 const impact = (n: number) => <span className={n > 0 ? "pos" : n < 0 ? "neg" : "muted"}>{n > 0 ? "+" : ""}{n}</span>;
 
-export default async function Events({ searchParams }: { searchParams: Q }) {
+export default async function EventsView({ searchParams }: { searchParams: Q }) {
   const coin = ["BTC", "ETH", "XRP"].includes(searchParams.coin ?? "") ? searchParams.coin! : "";
   const cat = CATS.includes(searchParams.cat ?? "") ? searchParams.cat! : "";
   const min = Math.max(0, Math.min(100, Number(searchParams.min) || 0));
@@ -31,15 +30,15 @@ export default async function Events({ searchParams }: { searchParams: Q }) {
     ]);
     return { moves: [], rows, sources };
   });
-  if (error || !data) return <><h1>Events / Research</h1><SetupError error={error ?? "unknown"} /></>;
+  if (error || !data) return <><h2 className="viewtitle">Events / Research</h2><SetupError error={error ?? "unknown"} /></>;
   const href = (o: Partial<Q>) => {
     const p = new URLSearchParams(Object.entries({ coin, cat, min: min ? String(min) : "", kind, ...o }).filter(([, v]) => v) as [string, string][]);
-    return `/events${p.size ? "?" + p : ""}`;
+    return `/news${p.size ? "?" + p : ""}`;
   };
 
   return (
     <>
-      <h1>Events / Research</h1>
+      <h2 className="viewtitle">Events / Research</h2>
       <p className="sub">Official sources, project announcements, news, Congress.gov, FRED and prediction markets, scored for BTC/ETH/XRP. Copies of one story are grouped into a single event; prediction markets are a feature, never a trade signal.</p>
 
       <div className="tabs">
@@ -48,7 +47,7 @@ export default async function Events({ searchParams }: { searchParams: Q }) {
         <span style={{ width: 12 }} />
         {[0, 40, 60, 75].map((m) => <Link key={m} href={href({ min: m ? String(m) : "" })} className={!moves && min === m ? "on" : ""}>{m ? `importance ≥ ${m}` : "any importance"}</Link>)}
         <span style={{ width: 12 }} />
-        <Link href="/events?view=moves" className={moves ? "on" : ""}>Sudden moves</Link>
+        <Link href="/news?view=moves" className={moves ? "on" : ""}>Sudden moves</Link>
       </div>
       {!moves && (
         <div className="tabs">

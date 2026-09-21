@@ -9,7 +9,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <Nav />
-        <div className="paper-banner">PAPER TRADING ONLY — fake money, real prices. No exchange or brokerage is connected.</div>
         <main className="wrap">{children}</main>
       </body>
     </html>

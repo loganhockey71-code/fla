@@ -1,103 +1,106 @@
 import Link from "next/link";
-import { safe, getSettings } from "@/lib/db";
-import { ACTION_HELP, COINS, latestPredictions, latestPrices, latestSignals, perfMetrics, portfolioSummary, scoredResults } from "@/lib/data";
-import { pct, price, pctPts, signedUsd, tone, usd, when } from "@/lib/format";
-import { verdict } from "@/lib/stats";
-import { Empty, Pill, SetupError, Stat } from "@/components/Ui";
+import { getSettings, safe, sql } from "@/lib/db";
+import { Coin } from "@/lib/manual";
+import { coinSnapshots, latestNews, manualPortfolio } from "@/lib/views";
+import { pendingPlan } from "@/lib/cashplan_db";
+import { ago, price, pctPts, signedUsd, tone, usd } from "@/lib/format";
+import { Empty, Pill, SetupError } from "@/components/Ui";
+import { Card, CoinIcon, Spark } from "@/components/Visuals";
 
 export const dynamic = "force-dynamic";
+const NAME: Record<string, string> = { BTC: "Bitcoin", ETH: "Ethereum", XRP: "XRP" };
+const BAR: Record<string, string> = { BUY: "#2ee59d", HOLD: "#5b8def", REDUCE: "#f5b942", SELL: "#ff5c7a" };
+const IMPACT = { positive: "Positive", negative: "Negative", neutral: "Neutral" } as const;
 
 export default async function Dashboard() {
   const { data, error } = await safe(async () => {
+    const db = sql();
     const cfg = await getSettings();
-    const [prices, preds, perf, port, results, signals] = await Promise.all([
-      latestPrices(), latestPredictions(), perfMetrics(), portfolioSummary(cfg.starting_balance), scoredResults(), latestSignals(),
-    ]);
-    return { cfg, prices, preds, perf, port, results, signals };
+    const snaps = await coinSnapshots(db);
+    const mids = Object.fromEntries(snaps.map((s) => [s.coin, s.price ?? 0])) as Record<Coin, number>;
+    const [news, port, plan] = await Promise.all([latestNews(db, 5), manualPortfolio(db, cfg.starting_balance, mids), pendingPlan(db)]);
+    return { cfg, snaps, news, port, plan };
   });
   if (error || !data) return <><h1>Dashboard</h1><SetupError error={error ?? "unknown"} /></>;
-  const { cfg, prices, preds, perf, port, results, signals } = data;
-
-  const all = perf.find("ALL", null, "all");
-  const hc = perf.find("ALL", null, "high_conf");
-  const mine = results.filter((r) => r.variant === "market");
-  const n = mine.length;
-  const hits = mine.filter((r) => r.directional_correct).length;
-  const v = verdict(n, hits, 0.5);
+  const { cfg, snaps, news, port, plan } = data;
 
   return (
     <>
-      <h1>Dashboard</h1>
-      <p className="sub">Would following this AI with real prices have made money? Live paper results only — backtests are on the Performance page.</p>
-
-      <div className="grid g4">
-        <Stat label="Fake portfolio value" value={usd(port.current)} sub={`started at ${usd(port.starting, 0)}`} />
-        <Stat label="Total P/L" cls={tone(port.pnl)} value={signedUsd(port.pnl)} sub={<span className={tone(port.ret)}>{pctPts(port.ret * 100)} return</span>} />
-        <Stat label="Directional accuracy (all predictions)" value={pct(all?.directional_accuracy)}
-          sub={all ? `${all.correct_predictions}/${all.total_predictions} signals correct incl. HOLD` : "no scored predictions yet"} />
-        <Stat label="High-confidence accuracy (≥ 75%)" value={hc && hc.total_predictions > 0 ? pct(hc.directional_accuracy) : "—"}
-          sub={`n = ${hc?.total_predictions ?? 0}${hc && hc.total_predictions < 30 ? " — too few to trust" : ""}`} />
-      </div>
-
-      <div className={`note ${v.tone === "good" ? "" : ""}`} style={{ borderLeftColor: v.tone === "good" ? "var(--pos)" : v.tone === "bad" ? "var(--neg)" : "var(--warn)" }}>
-        <b>Verdict so far: {v.label}.</b> {v.text}
-      </div>
-
-      <h2>What to do now</h2>
-      {COINS.some((c) => signals[c] && signals[c].trigger_kind !== "scheduled" && signals[c].urgency !== "low" && Date.now() - new Date(signals[c].created_at).getTime() < 3_600_000) && (
-        <div className={`alert ${COINS.some((c) => signals[c]?.urgency === "high" && Date.now() - new Date(signals[c].created_at).getTime() < 3_600_000) ? "" : "warn"}`}>
-          <b>Sudden event in the last hour.</b>{" "}
-          {COINS.filter((c) => signals[c] && signals[c].trigger_kind !== "scheduled" && signals[c].urgency !== "low" && Date.now() - new Date(signals[c].created_at).getTime() < 3_600_000)
-            .map((c) => `${c}: ${signals[c].action}`).join(" · ")}. Details on the <Link href="/signals">Signals</Link> page.
+      {plan && (
+        <div className="alert warn" style={{ marginTop: 18 }}>
+          <b>You have a cash plan waiting.</b> You sold ${Number(plan.amount).toFixed(2)} of {(plan.sold_coins as string[]).join(" and ")}. <Link href="/trades">See what the AI recommends doing with it →</Link>
         </div>
       )}
-      <div className="now">
-        {COINS.map((c) => {
-          const g = signals[c];
-          const live = g && new Date(g.expires_at).getTime() > Date.now();
-          return (
-            <div className={`card ${g && !live ? "stale" : ""}`} key={c}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><b>{c}</b>
-                {g && <span className="muted" style={{ fontSize: 12 }}>{g.trigger_kind === "scheduled" ? "regular model read" : `sudden ${g.trigger_kind}`} · {when(g.created_at)}</span>}</div>
-              {g ? (
-                <>
-                  <div className="act"><Pill kind={g.action}>{g.action}</Pill></div>
-                  <div className="muted" style={{ fontSize: 12 }}>{ACTION_HELP[g.action]}{g.urgency !== "low" ? ` · urgency ${g.urgency}` : ""}{!live ? " · expired, waiting for the next update" : ""}</div>
-                  <div className="why">{g.cause && g.trigger_kind !== "scheduled" ? `Likely cause: ${g.cause}. ` : ""}{(g.reasons as string[])[0]}</div>
-                </>
-              ) : <div className="why">No signal yet. The worker publishes one after each prediction run.</div>}
-            </div>
-          );
-        })}
-      </div>
-      <p className="muted" style={{ marginTop: 8 }}>Rule-based and unproven: it reacts to sudden moves, volume spikes and major news, and never changes the logged predictions. Paper trading only.</p>
 
-      <h2>Coins</h2>
-      <div className="grid g3">
-        {COINS.map((c) => {
-          const px = prices[c];
-          return (
-            <Link key={c} href={`/${c.toLowerCase()}`} className="card coin">
-              <div className="name"><b>{c}</b><span className="muted">{px ? when(px.ts) : ""}</span></div>
-              <div className="px">{price(px?.price)}</div>
-              {[24, 48].map((h) => {
-                const p = preds.find((x) => x.symbol === c && x.horizon_h === h);
-                return (
-                  <div className="row" key={h}>
-                    <span>{h}h</span>
-                    {p ? <span><Pill kind={p.signal}>{p.signal}</Pill> <b>{Math.round(p.confidence * 100)}%</b></span> : <span className="muted">no prediction yet</span>}
-                  </div>
-                );
-              })}
-              <div className="row"><span className="muted">Paper P/L</span><span className={tone(port.byCoin[c].pnl)}>{signedUsd(port.byCoin[c].pnl)}</span></div>
-            </Link>
-          );
-        })}
+      <section className="coinrow" aria-label="Prices">
+        {snaps.map((s) => (
+          <div className="card coincard" key={s.coin}>
+            <CoinIcon coin={s.coin} size={52} />
+            <div className="cc-main">
+              <div className="cc-name"><b>{NAME[s.coin]}</b><span className="muted">{s.coin}</span></div>
+              <div className="cc-price">{price(s.price)}
+                <span className={`chg ${s.change24h != null && s.change24h < 0 ? "neg" : "pos"}`}>{s.change24h != null ? pctPts(s.change24h * 100) : "—"}</span><span className="muted small"> 24h</span></div>
+            </div>
+            <Spark points={s.spark} up={(s.change24h ?? 0) >= 0} />
+          </div>
+        ))}
+      </section>
+
+      <div className="dash-grid">
+        <Card title="AI Trading Signals" action={<Link href="/signals" className="more">View analysis →</Link>}>
+          <p className="muted small" style={{ margin: "-4px 0 10px" }}>Based on market data, news and technical analysis. Confidence near 50% means the AI sees no clear edge. Its advice is unproven.</p>
+          <div className="scroll flat"><table className="signals">
+            <thead><tr><th>Coin</th><th>Signal</th><th>Confidence</th><th>Reason</th></tr></thead>
+            <tbody>{snaps.map((s) => (
+              <tr key={s.coin}>
+                <td><span className="rowcoin"><CoinIcon coin={s.coin} size={34} /><span><b>{s.coin}</b><br /><span className="muted small">{NAME[s.coin]}</span></span></span></td>
+                <td><Pill kind={s.action}>{s.action}</Pill>{s.sudden && <div className="muted small" style={{ marginTop: 3 }}>sudden event</div>}</td>
+                <td style={{ minWidth: 150 }}>
+                  {s.confidence != null ? (
+                    <><b>{Math.round(s.confidence * 100)}%</b><div className="bar"><i style={{ width: `${Math.round(s.confidence * 100)}%`, background: BAR[s.action] }} /></div></>
+                  ) : <span className="muted">—</span>}
+                </td>
+                <td className="reason">{s.reason}</td>
+              </tr>))}</tbody></table></div>
+        </Card>
+
+        <Card title="Latest News & Market Impact" action={<Link href="/news" className="more">View all news →</Link>}>
+          {!news.length ? <Empty>No important news yet.</Empty> : (
+            <div className="scroll flat"><table className="newslist">
+              <thead><tr><th>Time</th><th>Headline</th><th>Coins</th><th>Impact</th></tr></thead>
+              <tbody>{news.map((n) => (
+                <tr key={n.id as number}>
+                  <td className="muted nowrap">{ago(n.at as Date)}</td>
+                  <td className="headline">{n.source_url ? <a href={n.source_url as string} target="_blank" rel="noreferrer">{n.title as string}</a> : (n.title as string)}</td>
+                  <td className="nowrap">{(n.affected_coins as string[]).length >= 3 ? "All coins" : (n.affected_coins as string[]).join(" ")}</td>
+                  <td><Pill kind={n.sentiment as string}>{IMPACT[n.sentiment as keyof typeof IMPACT]}</Pill></td>
+                </tr>))}</tbody></table></div>
+          )}
+        </Card>
       </div>
-      {!preds.length && <Empty>No predictions yet. Run <code>python -m crypto_ai.cli train</code> once, then <code>python -m crypto_ai.cli tick</code> (or let the scheduled job do it).</Empty>}
-      <p className="muted" style={{ marginTop: 18 }}>
-        Percent next to BUY/HOLD/SELL = the model's confidence (its calibrated probability for the side it picked). Trades use {cfg.trading_fee_pct}% fee and {cfg.slippage_pct}% slippage plus the live spread.
-      </p>
+
+      <div className="dash-grid">
+        <Card title="Paper Trading Portfolio" action={<Link href="/trades" className="more">Trade →</Link>}>
+          <div className="portfolio">
+            <div><div className="muted small">Total value</div><div className="big">{usd(port.total)}</div></div>
+            <div><div className="muted small">Cash</div><div className="big2">{usd(port.cash)}</div></div>
+            <div><div className="muted small">Profit / loss</div><div className={`big2 ${tone(port.pnl)}`}>{signedUsd(port.pnl)}</div>
+              <div className={`small ${tone(port.pnl)}`}>{pctPts((port.pnl / cfg.starting_balance) * 100)} since you started</div></div>
+          </div>
+          <p className="muted small" style={{ marginBottom: 0 }}>Fake money only. Started with {usd(cfg.starting_balance, 0)}. Real Coinbase prices, with fees and slippage.</p>
+        </Card>
+
+        <Card title="Recent Trades" action={<Link href="/trades" className="more">View all trades →</Link>}>
+          {!port.events.length ? <Empty>No trades yet. Open <Link href="/trades">Trades</Link> to buy or sell with fake money.</Empty> : (
+            <div className="scroll flat"><table>
+              <thead><tr><th>Time</th><th>Coin</th><th>Side</th><th className="num">Amount</th><th className="num">Price</th><th className="num">P/L</th></tr></thead>
+              <tbody>{port.events.slice(0, 5).map((e, i) => (
+                <tr key={i}><td className="muted nowrap">{ago(e.at)}</td><td><b>{e.coin}</b></td><td className={e.side === "BUY" ? "pos" : "neg"}><b>{e.side}</b></td>
+                  <td className="num">{e.qty.toPrecision(4)}</td><td className="num">{price(e.price)}</td>
+                  <td className={`num ${tone(e.pnl)}`}>{e.pnl != null ? signedUsd(e.pnl) : "—"}</td></tr>))}</tbody></table></div>
+          )}
+        </Card>
+      </div>
     </>
   );
 }

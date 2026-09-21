@@ -10,7 +10,7 @@ export const MAX_SPREAD_PCT = 2; // refuse to fill in a broken market
 export type Cfg = { trading_fee_pct: number; slippage_pct: number; use_real_spread: boolean; starting_balance: number };
 export type Quote = { mid: number; spreadPct: number };
 export type Order = { side: "buy" | "sell"; coin: Coin; amountUsd?: number; fraction?: number };
-export type Result = { ok: boolean; message: string };
+export type Result = { ok: boolean; message: string; proceeds?: number };
 
 /** Same fill model as the AI account (worker/crypto_ai/paper.py): cross half the real spread, then slippage against you. */
 export function fillPrice(mid: number, side: "buy" | "sell", spreadPct: number, slipPct: number, useSpread: boolean): number {
@@ -110,27 +110,27 @@ export async function executeOrder(sql: postgres.Sql, o: Order, quote: Quote, cf
                  fee_entry=${(l.fee_entry as number) * (1 - f)}, balance_after_open=${after} where id=${l.id as number}`;
       }
     }
-    return { ok: true, message: `Sold ${qtySold.toPrecision(6)} ${o.coin} at ${usd(exit)} (market ${usd(quote.mid)}). Received ${usd(proceeds)} after fees. ${pnlTotal >= 0 ? "Profit" : "Loss"} ${usd(Math.abs(pnlTotal))}.` };
+    return { ok: true, message: `Sold ${qtySold.toPrecision(6)} ${o.coin} at ${usd(exit)} (market ${usd(quote.mid)}). Received ${usd(proceeds)} after fees. ${pnlTotal >= 0 ? "Profit" : "Loss"} ${usd(Math.abs(pnlTotal))}.`, proceeds };
   });
 }
 
 
 /** Sell every open manual position, one coin at a time, each at its own live price. */
-export async function sellEverything(sql: postgres.Sql, quotes: Record<Coin, Quote | null>, cfg: Cfg, prices: Record<Coin, number>): Promise<Result & { sold: Coin[] }> {
+export async function sellEverything(sql: postgres.Sql, quotes: Record<Coin, Quote | null>, cfg: Cfg, prices: Record<Coin, number>): Promise<Result & { sold: Coin[]; proceeds: number }> {
   const held = await sql`select distinct symbol from paper_trades where account = 'manual' and status = 'open'`;
   const coins = COINS.filter((c) => held.some((r) => r.symbol === c));
-  if (!coins.length) return { ok: false, message: "You don't hold anything to sell.", sold: [] };
+  if (!coins.length) return { ok: false, message: "You don't hold anything to sell.", sold: [], proceeds: 0 };
   const msgs: string[] = [], sold: Coin[] = [];
-  let ok = true;
+  let ok = true, proceeds = 0;
   for (const c of coins) {
     const q = quotes[c];
     if (!q) { ok = false; msgs.push(`${c}: no live price, not sold.`); continue; }
     const r = await executeOrder(sql, { side: "sell", coin: c, fraction: 1 }, q, cfg, prices, null);
     ok = ok && r.ok;
-    if (r.ok) sold.push(c);
+    if (r.ok) { sold.push(c); proceeds += r.proceeds ?? 0; }
     msgs.push(`${c}: ${r.message}`);
   }
-  return { ok, message: msgs.join(" "), sold };
+  return { ok, message: msgs.join(" "), sold, proceeds };
 }
 
 // ---------------------------------------------------------------------------- profit & loss (pure)

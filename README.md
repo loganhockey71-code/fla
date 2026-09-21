@@ -11,7 +11,7 @@ worker/crypto_ai/     Python worker + ML            .github/workflows/  free sch
 
 ## Setup (~15 min, $0)
 
-1. **Supabase**: create a free project. SQL Editor → run `supabase/schema.sql`, then `supabase/schema_research.sql`, then `supabase/schema_manual.sql`, then `supabase/schema_learning.sql`. Copy the *Transaction pooler* connection string (Project Settings → Database).
+1. **Supabase**: create a free project. SQL Editor → run `supabase/schema.sql`, then `supabase/schema_research.sql`, then `supabase/schema_manual.sql`, then `supabase/schema_learning.sql`, then `supabase/schema_cashplan.sql`. Copy the *Transaction pooler* connection string (Project Settings → Database).
 2. **Train the first models** (once, on your machine):
    ```bash
    cd worker
@@ -31,6 +31,12 @@ Local dashboard: `cd web && npm install && npm run dev` (needs `DATABASE_URL`).
 ## What one `tick` does
 collect price/spread/order book/flow → ingest news → detect sudden moves → close paper trades whose horizon ended → score predictions whose window ended → make new predictions if due (default every 6 h) → act on BUY/SELL → snapshot portfolio → recompute metrics.
 
+## The app: five pages
+**Dashboard** (BTC/ETH/XRP price cards with 24h change and chart, one AI signal table, news and market impact, your paper portfolio and recent trades) · **Signals** (live signals, prediction history, accuracy, learning) · **News** (research events, sudden moves, source health) · **Trades** (your manual trading, plus the AI's own test account) · **Settings** (settings and system health). Old links redirect.
+
+## "What should I do with the cash?"
+Whenever you sell in the Trades page, the app immediately analyses the money that was freed up and saves a recommendation: keep it as cash, buy one coin, or split it. It scores each coin from the current AI signal and confidence, recent news, sudden-event risk and market stress, caps any single coin at 40% of your portfolio, and shows a **safer** option (keep all cash) and a **more aggressive** one (a 60/40 split of the top two). **Nothing is invested until you press a confirm button**; a plan can only run once, and it buys at the live price with the normal fees and slippage. Its advice is only as good as the AI's signals, which are unproven; when every signal is near 50% it says so and defaults to keeping cash.
+
 ## Real-time signals (the Signals tab, "What to do now" on the dashboard)
 The system watches BTC/ETH/XRP for a **fast price move** (default 1% inside 5/15/30 min), a **volume spike** (3x with a move, or 6x alone), an extreme **order-book imbalance**, and **major news** (official or importance 60+). On a trigger it investigates (did the other coins move? was there volume? is there news or a regulator announcement?), refreshes the model read, and publishes **BUY / HOLD / REDUCE / SELL** with every scoring term listed. REDUCE = sell about half, SELL = exit; falls count fully, rallies count half (don't chase). Severe negative official news (importance 85+) exits on its own. It is a rule-based overlay: it never edits the logged predictions and is **unproven** (each signal stores its price so outcomes can be measured). `python -m crypto_ai.cli watch` runs it about once a minute; the hourly GitHub job checks once per run.
 
@@ -41,7 +47,7 @@ The system watches BTC/ETH/XRP for a **fast price move** (default 1% inside 5/15
 4. **Retraining** is attempted only after 30 days AND 100 newly scored predictions, at most once per 14-day window. A challenger trains only on data before the window; champion and challenger are then scored on that same unseen window and the challenger replaces the champion only if it is better in log-loss on both horizons, wins a paired daily sign test, is not worse-calibrated, and beats a coin flip. Every attempt is recorded (`model_challenges`), promoted or not.
 `python -m crypto_ai.cli learn [--force-retrain]` runs it by hand; `tick` runs it automatically.
 
-## Manual paper trading (the Trade tab)
+## Manual paper trading (Trades > My trading)
 Buy and sell BTC/ETH/XRP any time with fake money, all on one page. **Buy** with a dollar amount (quick $25/$50/$100/Max). **Sell** 25% / 50% / 75% / all, or a dollar amount, from each coin card or the **Your holdings** table, or press **Sell everything** (asks to confirm). Same live price, real spread, 0.4% fee and 0.1% slippage as the AI, no leverage, spot only. It is a **separate account** (its own $1,000) so your trades never change the AI's results. **Profit & loss** shows profit locked in from sales (kept when you rebuy), profit on what you still hold, an average cost that restarts on each new purchase, and a running total per sale. Every trade stores what the AI was saying at that moment. Manual positions never close automatically; you sell them.
 
 ## Research layer (free, read-only)

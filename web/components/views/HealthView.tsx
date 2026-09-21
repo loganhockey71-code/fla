@@ -1,18 +1,17 @@
 import { runChecks } from "@/lib/health";
 import { Pill } from "@/components/Ui";
 
-export const dynamic = "force-dynamic";
 
 const LABEL = { ok: "Working", error: "Error", waiting: "Waiting", unused: "Not used" } as const;
 const KIND = { ok: "good", error: "bad", waiting: "warn", unused: "muted" } as const;
 
-export default async function Health() {
+export default async function HealthView() {
   const checks = await runChecks();
   const errors = checks.filter((c) => c.status === "error").length;
   const waiting = checks.filter((c) => c.status === "waiting").length;
   return (
     <>
-      <h1>System health</h1>
+      <h2 className="viewtitle">System health</h2>
       <p className="sub">Live checks, run every time you load this page. Nothing here says the AI is accurate: it only shows that data is being collected and predictions are being logged.</p>
       <div className="note" style={{ borderLeftColor: errors ? "var(--neg)" : waiting ? "var(--warn)" : "var(--pos)" }}>
         <b>{errors ? `${errors} problem${errors > 1 ? "s" : ""} found.` : waiting ? "No errors. Some parts are waiting for their first data." : "Everything is working."}</b>

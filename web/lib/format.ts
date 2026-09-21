@@ -15,3 +15,13 @@ export const when = (d: Date | string | null | undefined) =>
   d ? new Date(d).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" }) + " UTC" : "—";
 
 export const tone = (n: number | null | undefined) => (n == null || n === 0 ? "" : n > 0 ? "pos" : "neg");
+
+/** "2h ago", "5 min ago", "3d ago" */
+export function ago(d: Date | string | null | undefined): string {
+  if (!d) return "—";
+  const s = Math.max(0, (Date.now() - new Date(d).getTime()) / 1000);
+  if (s < 90) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}

@@ -3,9 +3,8 @@ import { safe, sql } from "@/lib/db";
 import { pct, pctPts, price, when } from "@/lib/format";
 import { Empty, Pill, SetupError } from "@/components/Ui";
 
-export const dynamic = "force-dynamic";
 
-export default async function Predictions({ searchParams }: { searchParams: { coin?: string; h?: string; v?: string } }) {
+export default async function PredictionsView({ searchParams }: { searchParams: { coin?: string; h?: string; v?: string } }) {
   const coin = ["BTC", "ETH", "XRP"].includes(searchParams.coin ?? "") ? searchParams.coin! : "";
   const v = searchParams.v === "research" ? "research" : "market";
   const h = searchParams.h === "24" || searchParams.h === "48" ? Number(searchParams.h) : 0;
@@ -14,12 +13,12 @@ export default async function Predictions({ searchParams }: { searchParams: { co
     from predictions p left join prediction_results r on r.prediction_id = p.id
     where p.variant = ${v} and (${coin} = '' or p.symbol = ${coin}) and (${h} = 0 or p.horizon_h = ${h})
     order by p.created_at desc limit 300`);
-  if (error || !data) return <><h1>Predictions</h1><SetupError error={error ?? "unknown"} /></>;
-  const link = (c: string, hh: number, vv = v) => `/predictions?${new URLSearchParams({ ...(c ? { coin: c } : {}), ...(hh ? { h: String(hh) } : {}), v: vv })}`;
+  if (error || !data) return <><h2 className="viewtitle">Predictions</h2><SetupError error={error ?? "unknown"} /></>;
+  const link = (c: string, hh: number, vv = v) => `/signals?${new URLSearchParams({ tab: "predictions", ...(c ? { coin: c } : {}), ...(hh ? { h: String(hh) } : {}), v: vv })}`;
 
   return (
     <>
-      <h1>Prediction history</h1>
+      <h2 className="viewtitle">Prediction history</h2>
       <p className="sub">Append-only: the database rejects any UPDATE or DELETE on predictions. Each row keeps the exact model version and the feature values it saw.</p>
       <div className="tabs">
         {["", "BTC", "ETH", "XRP"].map((c) => <Link key={c} href={link(c, h)} className={coin === c ? "on" : ""}>{c || "All coins"}</Link>)}

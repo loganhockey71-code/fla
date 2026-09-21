@@ -353,6 +353,11 @@ def check_learning(db, cfg) -> None:
     rec("PASS" if not early else "FAIL", "no retrain was attempted before the required days/examples (forced test runs excluded)", f"{len(early)} early")
     active = db.all("select symbol, variant, count(*) n from model_versions where is_active group by 1,2 having count(*) <> 1")
     rec("PASS" if not active else "FAIL", "exactly one active model per coin and variant")
+    rec("PASS" if db.one("select to_regclass('cash_plans') t")["t"] else "FAIL", "table cash_plans exists (\"what should I do with the cash?\")")
+    stuck = db.one("select count(*) n from cash_plans where status = 'executing' and created_at < now() - interval '10 minutes'")["n"]
+    rec("PASS" if stuck == 0 else "FAIL", "no cash plan is stuck half-executed", f"{stuck} stuck")
+    unasked = db.one("select count(*) n from paper_trades t where t.account = 'manual' and t.ai_advice->>'source' = 'cash_plan' and not exists (select 1 from cash_plans c where c.id = (t.ai_advice->>'plan_id')::bigint and c.status = 'confirmed')")["n"]
+    rec("PASS" if unasked == 0 else "FAIL", "every trade made from a cash plan belongs to a plan the user confirmed", f"{unasked} without confirmation")
     rec("INFO", "learning status", f"{db.one('select count(*) n from post_mortems')['n']} post-mortems, {db.one('select count(*) n from learned_patterns')['n']} patterns tracked, {db.one('select count(*) n from model_challenges')['n']} retrain attempts")
 
 

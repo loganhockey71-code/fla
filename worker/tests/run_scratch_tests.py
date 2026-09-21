@@ -14,7 +14,7 @@ from pathlib import Path
 import pgserver
 
 ROOT = Path(__file__).resolve().parents[2]
-SCHEMAS = ("schema.sql", "schema_research.sql", "schema_manual.sql", "schema_learning.sql")
+SCHEMAS = ("schema.sql", "schema_research.sql", "schema_manual.sql", "schema_learning.sql", "schema_cashplan.sql")
 
 
 def fresh_db():
@@ -36,7 +36,7 @@ def run(cmd, cwd, url, keep=("✔", "✖", "ℹ tests", "ℹ pass", "ℹ fail", 
 
 if __name__ == "__main__":
     rc = 0
-    for name in ("tests/manual.test.mjs", "tests/manual_pnl.test.mjs"):
+    for name in ("tests/manual.test.mjs", "tests/manual_pnl.test.mjs", "tests/cashplan_db.test.mjs"):
         srv, url = fresh_db()
         print(f"== {name} (Node) ==")
         rc |= run(["node", "--test", name], ROOT / "web", url)
