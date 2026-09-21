@@ -42,7 +42,7 @@ The system watches BTC/ETH/XRP for a **fast price move** (default 1% inside 5/15
 `python -m crypto_ai.cli learn [--force-retrain]` runs it by hand; `tick` runs it automatically.
 
 ## Manual paper trading (the Trade tab)
-Buy and sell BTC/ETH/XRP any time with fake money: `$` amount buy (with quick $25/$50/$100/Max), and Sell 25% / 50% / all. Same live price, real spread, 0.4% fee and 0.1% slippage as the AI, no leverage, spot only. It is a **separate account** (its own $1,000) so your trades never change the AI's results. The AI's current BUY/HOLD/SELL and confidence show beside each coin, and every manual trade stores what the AI was saying at that moment. Manual positions never close automatically; you sell them.
+Buy and sell BTC/ETH/XRP any time with fake money, all on one page. **Buy** with a dollar amount (quick $25/$50/$100/Max). **Sell** 25% / 50% / 75% / all, or a dollar amount, from each coin card or the **Your holdings** table, or press **Sell everything** (asks to confirm). Same live price, real spread, 0.4% fee and 0.1% slippage as the AI, no leverage, spot only. It is a **separate account** (its own $1,000) so your trades never change the AI's results. **Profit & loss** shows profit locked in from sales (kept when you rebuy), profit on what you still hold, an average cost that restarts on each new purchase, and a running total per sale. Every trade stores what the AI was saying at that moment. Manual positions never close automatically; you sell them.
 
 ## Research layer (free, read-only)
 Sources and trust tier (1 = most trusted) - polled on their own schedule by `python -m crypto_ai.cli research` / `research-loop`:

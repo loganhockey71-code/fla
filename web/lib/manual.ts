@@ -72,10 +72,13 @@ export async function executeOrder(sql: postgres.Sql, o: Order, quote: Quote, cf
     }
 
     // ------------------------------------------------------------------ SELL
-    const f = Number(o.fraction);
-    if (!(f > 0 && f <= 1)) return { ok: false, message: "Choose how much to sell." };
     const lots = rows.filter((r) => r.status === "open" && r.symbol === o.coin);
-    if (!lots.length) return { ok: false, message: `You don't hold any ${o.coin} to sell (paper trading is spot only, no shorting).` };
+    if (!lots.length) return { ok: false, message: `You don't hold any ${o.coin} to sell. Buy some first (paper trading is spot only, no shorting).` };
+    const heldValue = lots.reduce((a, l) => a + (l.quantity as number) * quote.mid, 0);
+    let f = o.fraction != null ? Number(o.fraction) : Number(o.amountUsd) / heldValue;      // "sell 50%" or "sell $X worth"
+    if (o.fraction == null && Number.isFinite(f) && f > 1 && f < 1.0001) f = 1;
+    if (o.fraction == null && f > 1) return { ok: false, message: `You only hold about ${usd(heldValue)} of ${o.coin}. Choose a smaller amount or Sell all.` };
+    if (!(f > 0 && f <= 1)) return { ok: false, message: "Choose how much to sell." };
     const exit = fillPrice(quote.mid, "sell", quote.spreadPct, cfg.slippage_pct, cfg.use_real_spread);
     const full = f > 0.9999;
     let proceeds = 0, pnlTotal = 0, qtySold = 0;
@@ -109,4 +112,52 @@ export async function executeOrder(sql: postgres.Sql, o: Order, quote: Quote, cf
     }
     return { ok: true, message: `Sold ${qtySold.toPrecision(6)} ${o.coin} at ${usd(exit)} (market ${usd(quote.mid)}). Received ${usd(proceeds)} after fees. ${pnlTotal >= 0 ? "Profit" : "Loss"} ${usd(Math.abs(pnlTotal))}.` };
   });
+}
+
+
+/** Sell every open manual position, one coin at a time, each at its own live price. */
+export async function sellEverything(sql: postgres.Sql, quotes: Record<Coin, Quote | null>, cfg: Cfg, prices: Record<Coin, number>): Promise<Result & { sold: Coin[] }> {
+  const held = await sql`select distinct symbol from paper_trades where account = 'manual' and status = 'open'`;
+  const coins = COINS.filter((c) => held.some((r) => r.symbol === c));
+  if (!coins.length) return { ok: false, message: "You don't hold anything to sell.", sold: [] };
+  const msgs: string[] = [], sold: Coin[] = [];
+  let ok = true;
+  for (const c of coins) {
+    const q = quotes[c];
+    if (!q) { ok = false; msgs.push(`${c}: no live price, not sold.`); continue; }
+    const r = await executeOrder(sql, { side: "sell", coin: c, fraction: 1 }, q, cfg, prices, null);
+    ok = ok && r.ok;
+    if (r.ok) sold.push(c);
+    msgs.push(`${c}: ${r.message}`);
+  }
+  return { ok, message: msgs.join(" "), sold };
+}
+
+// ---------------------------------------------------------------------------- profit & loss (pure)
+type Lot = { id: number; symbol: string; status: string; quantity: number; amount_invested: number; fee_entry: number; exit_price: number | null; fee_exit: number | null; pnl_usd: number | null; closed_at: Date | null };
+export type CoinPnl = { coin: Coin; bought: number; soldProceeds: number; realized: number; qty: number; openCost: number; avgCost: number | null; value: number; unrealized: number; ifSoldNet: number | null };
+
+/** Per-coin and total profit. `realized` never disappears when you sell and rebuy; `avgCost` restarts from the new purchase. */
+export function summarize(trades: Lot[], mids: Record<Coin, number>, cfg: Cfg, quotes: Record<Coin, Quote | null>) {
+  const fee = cfg.trading_fee_pct / 100;
+  const per: CoinPnl[] = COINS.map((coin) => {
+    const mine = trades.filter((t) => t.symbol === coin && (t.status === "open" || t.status === "closed"));
+    const open = mine.filter((t) => t.status === "open"), closed = mine.filter((t) => t.status === "closed");
+    const qty = open.reduce((a, t) => a + t.quantity, 0);
+    const openCost = open.reduce((a, t) => a + t.amount_invested + t.fee_entry, 0);
+    const q = quotes[coin];
+    const sellPx = q ? fillPrice(q.mid, "sell", q.spreadPct, cfg.slippage_pct, cfg.use_real_spread) : null;
+    return {
+      coin, bought: mine.reduce((a, t) => a + t.amount_invested + t.fee_entry, 0),
+      soldProceeds: closed.reduce((a, t) => a + t.quantity * (t.exit_price ?? 0) - (t.fee_exit ?? 0), 0),
+      realized: closed.reduce((a, t) => a + (t.pnl_usd ?? 0), 0), qty, openCost, avgCost: qty > 0 ? openCost / qty : null,
+      value: qty * mids[coin], unrealized: qty * mids[coin] - openCost, ifSoldNet: sellPx != null && qty > 0 ? qty * sellPx * (1 - fee) - openCost : null,
+    };
+  });
+  const realized = per.reduce((a, c) => a + c.realized, 0);
+  const unrealized = per.reduce((a, c) => a + c.unrealized, 0);
+  let run = 0;
+  const sales = trades.filter((t) => t.status === "closed").sort((a, b) => (+new Date(a.closed_at as Date) - +new Date(b.closed_at as Date)) || a.id - b.id)
+    .map((t) => ({ ...t, running: (run += t.pnl_usd ?? 0) }));
+  return { per, realized, unrealized, sales };
 }

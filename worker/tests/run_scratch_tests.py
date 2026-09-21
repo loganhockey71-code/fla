@@ -36,9 +36,10 @@ def run(cmd, cwd, url, keep=("✔", "✖", "ℹ tests", "ℹ pass", "ℹ fail", 
 
 if __name__ == "__main__":
     rc = 0
-    srv, url = fresh_db()
-    print("== manual trading engine (Node) ==")
-    rc |= run(["node", "--test", "tests/manual.test.mjs"], ROOT / "web", url)
+    for name in ("tests/manual.test.mjs", "tests/manual_pnl.test.mjs"):
+        srv, url = fresh_db()
+        print(f"== {name} (Node) ==")
+        rc |= run(["node", "--test", name], ROOT / "web", url)
     for name in ("tests/test_e2e.py", "tests/test_learning_e2e.py", "tests/test_research.py"):
         srv, url = fresh_db()
         print(f"== {name} ==")
