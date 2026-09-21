@@ -44,7 +44,7 @@ def _pollers():
     return {"congress_api": congress.poll, "fred_api": fred.poll, "polymarket": markets.poll_polymarket, "kalshi": markets.poll_kalshi}, feeds.poll_rss
 
 
-def run_due(db, only: list[str] | None = None, force: bool = False) -> dict:
+def run_due(db, only: list[str] | None = None, force: bool = False, interval_s: int | None = None) -> dict:
     ensure_registry(db)
     special, rss = _pollers()
     now = datetime.now(timezone.utc)
@@ -52,7 +52,7 @@ def run_due(db, only: list[str] | None = None, force: bool = False) -> dict:
     for src in db.all("select * from source_registry where enabled order by tier, key"):
         if only and src["key"] not in only:
             continue
-        due = force or src["last_polled_at"] is None or now - src["last_polled_at"] >= timedelta(seconds=src["poll_interval_s"])
+        due = force or src["last_polled_at"] is None or now - src["last_polled_at"] >= timedelta(seconds=interval_s or src["poll_interval_s"])
         if not due:
             continue
         fn = special.get(src["key"], rss)

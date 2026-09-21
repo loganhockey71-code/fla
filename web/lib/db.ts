@@ -34,6 +34,12 @@ export type Settings = {
   hold_band_pct_48h: number;
   sudden_move_pct: number;
   volume_spike_x: number;
+  retrain_min_days: number;
+  retrain_min_new_scored: number;
+  retrain_holdout_days: number;
+  pattern_min_examples: number;
+  news_trigger_importance: number;
+  signal_cooldown_min: number;
 };
 
 export async function getSettings(): Promise<Settings> {
@@ -42,6 +48,7 @@ export async function getSettings(): Promise<Settings> {
     starting_balance: 1000, trading_fee_pct: 0.4, slippage_pct: 0.1, use_real_spread: true, normal_position_pct: 10,
     high_conf_position_pct: 20, high_confidence_threshold: 75, signal_threshold_pct: 52, prediction_interval_h: 6,
     max_spread_pct_to_trade: 0.3, hold_band_pct_24h: 1.5, hold_band_pct_48h: 2.0, sudden_move_pct: 1.0, volume_spike_x: 3.0,
+    retrain_min_days: 30, retrain_min_new_scored: 100, retrain_holdout_days: 14, pattern_min_examples: 30, news_trigger_importance: 60, signal_cooldown_min: 30,
   };
   for (const r of rows) s[r.key as string] = r.value;
   return s as unknown as Settings;

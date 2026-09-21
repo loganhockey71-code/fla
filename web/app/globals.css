@@ -50,3 +50,13 @@ button.buy, button.sell { border: 0; border-radius: 8px; padding: 9px 14px; font
 button.buy { background: var(--pos); color: #04150e; width: 100%; }
 button.sell { background: #2a1419; color: var(--neg); border: 1px solid #7a2a34; flex: 1; }
 button:disabled { opacity: .45; cursor: not-allowed; }
+
+/* live signals */
+.pill.REDUCE { color: var(--warn); border-color: #6b5320; background: #2a2210; }
+.now { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.now .card { position: relative; }
+.now .act { font-size: 26px; font-weight: 800; letter-spacing: -.01em; }
+.now .stale { opacity: .55; }
+.alert { border: 1px solid #7a2a34; border-left: 4px solid var(--neg); background: #21121a; border-radius: 10px; padding: 12px 16px; margin: 14px 0; }
+.alert.warn { border-color: #6b5320; border-left-color: var(--warn); background: #211b0e; }
+.alert b { color: var(--text); }

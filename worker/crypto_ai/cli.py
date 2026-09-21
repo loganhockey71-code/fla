@@ -12,7 +12,8 @@ import traceback
 from datetime import datetime, timedelta, timezone
 
 
-from . import coinbase, coingecko, detector, evaluator, metrics, paper, predictor
+from . import coinbase, coingecko, evaluator, metrics, paper, predictor, realtime
+from . import learning
 from .research import registry
 from .config import BAR, PRODUCTS, SYMBOLS
 from .db import DB, JsonList
@@ -99,22 +100,40 @@ def tick(db: DB) -> None:
 
     snaps = step("collect", lambda: collect(db)) or {}
     step("research", lambda: {k: (v.get("new", v.get("status"))) for k, v in registry.run_due(db).items()})
-    step("detect", lambda: [f["text"] for f in detector.run_detector(db, cfg, snaps)])
+    step("sudden", lambda: [f["text"][:80] for f in realtime.run_watch_cycle(db, cfg, snaps)])
     prices = {s: v["price"] for s, v in snaps.items()}
     spreads = {s: v.get("spread_pct") for s, v in snaps.items()}
     if len(prices) == len(SYMBOLS):
         step("close_trades", lambda: paper.close_due_positions(db, cfg, prices, spreads, coinbase.price_at_safe))
     n_eval = step("evaluate", lambda: evaluator.evaluate_due(db, cfg))
     step("predict", lambda: len(predictor.run_predictions(db, cfg)))
+    step("standing", lambda: realtime.publish_standing(db, cfg))
     if len(prices) == len(SYMBOLS):
         step("portfolio", lambda: round(paper.snapshot_portfolio(db, cfg, prices)["total_value"], 2))
     step("metrics", lambda: metrics.recompute(db))
+    step("learn", lambda: learning.run_all(db, cfg))
     print(f"[{datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S}Z] " + " | ".join(steps))
+
+
+def watch(db: DB, every: int) -> None:
+    """Near-real-time loop: sudden price, volume and book moves every pass; official news feeds every 90 s."""
+    official = ["sec_press", "sec_statements", "fed_press", "fed_speeches", "cftc_press", "cftc_enforcement", "congress_api", "xrpl_rippled", "eth_foundation", "eth_geth"]
+    while True:
+        try:
+            cfg = db.settings()
+            registry.run_due(db, only=official, interval_s=90)
+            snaps = {s: predictor.micro_snapshot(s) for s in SYMBOLS}
+            for f in realtime.run_watch_cycle(db, cfg, snaps):
+                print(f"[{datetime.now(timezone.utc):%H:%M:%S}Z] {f['urgency'].upper()} {f['text']}", flush=True)
+        except Exception:
+            traceback.print_exc()
+            db = DB()
+        time.sleep(every)
 
 
 def cmd_status(db: DB) -> None:
     for t in ["market_data", "candles", "model_versions", "predictions", "prediction_results", "paper_trades",
-              "portfolio", "news_items", "events", "research_events", "event_duplicates", "macro_data", "legislative_items", "prediction_market_snapshots"]:
+              "portfolio", "news_items", "events", "live_signals", "post_mortems", "learned_patterns", "model_challenges", "research_events", "event_duplicates", "macro_data", "legislative_items", "prediction_market_snapshots"]:
         print(f"{t:20s} {db.one(f'select count(*) as n from {t}')['n']}")
 
 
@@ -132,6 +151,10 @@ def main(argv=None) -> None:
     r.add_argument("--force", action="store_true", help="ignore polling intervals")
     rl = sub.add_parser("research-loop", help="poll research sources forever, each at its own interval")
     rl.add_argument("--every", type=int, default=60, help="how often to check which sources are due (seconds)")
+    lr = sub.add_parser("learn", help="post-mortems on wrong predictions, pattern statistics, and the guarded retrain check")
+    lr.add_argument("--force-retrain", action="store_true", help="attempt a champion/challenger comparison now (still only promotes if the challenger wins on unseen data)")
+    w = sub.add_parser("watch", help="real-time sudden-event watcher (price / volume / news), one pass every N seconds")
+    w.add_argument("--every", type=int, default=60)
     sub.add_parser("status")
     sub.add_parser("selfcheck", help="read-only end-to-end verification of the running system")
     a = ap.parse_args(argv)
@@ -159,6 +182,11 @@ def main(argv=None) -> None:
                 traceback.print_exc()
                 db = DB()
             time.sleep(a.every)
+    elif a.cmd == "learn":
+        cfg = db.settings()
+        print(learning.run_all(db, cfg, force_retrain=a.force_retrain, verbose=True))
+    elif a.cmd == "watch":
+        watch(db, a.every)
     elif a.cmd == "status":
         cmd_status(db)
     elif a.cmd == "selfcheck":

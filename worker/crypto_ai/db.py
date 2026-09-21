@@ -30,8 +30,13 @@ class DB:
     def __init__(self, url: str | None = None):
         self.conn = psycopg2.connect(url or database_url())
         self.conn.autocommit = True
-        with self.conn.cursor() as cur:
-            cur.execute("set time zone 'UTC'")
+        for tz in ("UTC", "UTC0"):                       # UTC0 (POSIX form) works on builds that ship without a tz database
+            try:
+                with self.conn.cursor() as cur:
+                    cur.execute(f"set time zone '{tz}'")
+                break
+            except psycopg2.Error:
+                continue
 
     def all(self, sql, params=None) -> list[dict]:
         with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:

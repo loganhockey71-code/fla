@@ -1,5 +1,5 @@
 import { getSettings, safe, sql } from "@/lib/db";
-import { latestPredictions } from "@/lib/data";
+import { ACTION_HELP, latestPredictions, latestSignals } from "@/lib/data";
 import { COINS, Coin, cashOf, fillPrice } from "@/lib/manual";
 import { liveQuote } from "@/lib/quotes";
 import { pct, pctPts, price, signedUsd, tone, usd, when } from "@/lib/format";
@@ -14,16 +14,17 @@ export default async function Trade() {
   const { data, error } = await safe(async () => {
     const db = sql();
     const cfg = await getSettings();
-    const [quotes, preds, trades, stored] = await Promise.all([
+    const [quotes, preds, trades, stored, signals] = await Promise.all([
       Promise.all(COINS.map((c) => liveQuote(c))),
       latestPredictions(),
       db`select * from paper_trades where account = 'manual' order by id desc limit 200`,
       db`select distinct on (symbol) symbol, price from market_data order by symbol, ts desc`,
+      latestSignals(),
     ]);
-    return { cfg, quotes, preds, trades, stored };
+    return { cfg, quotes, preds, trades, stored, signals };
   });
   if (error || !data) return <><h1>Manual trading</h1><SetupError error={error ?? "unknown"} /></>;
-  const { cfg, quotes, preds, trades, stored } = data;
+  const { cfg, quotes, preds, trades, stored, signals } = data;
 
   const book = trades.filter((t) => t.status === "open" || t.status === "closed");
   const cash = cashOf(cfg.starting_balance, book as never);
@@ -79,6 +80,19 @@ export default async function Trade() {
                   </>
                 ) : <div className="why">No prediction yet.</div>}
               </div>
+
+              {signals[c] && (() => {
+                const g = signals[c];
+                const live = new Date(g.expires_at).getTime() > Date.now();
+                const sudden = g.trigger_kind !== "scheduled";
+                return (
+                  <div className="advice" style={{ borderColor: sudden && live && g.urgency !== "low" ? "var(--warn)" : undefined, opacity: live ? 1 : 0.55 }}>
+                    <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em" }}>Right now {sudden ? "(sudden event)" : ""} · {when(g.created_at)}</div>
+                    <div style={{ fontSize: 20, margin: "4px 0" }}><Pill kind={g.action}>{g.action}</Pill> <span className="muted" style={{ fontSize: 12 }}>{ACTION_HELP[g.action]}</span></div>
+                    <div className="why">{g.cause && sudden ? `Likely cause: ${g.cause}. ` : ""}{(g.reasons as string[]).slice(0, 2).join("; ")}{!live ? " (expired)" : ""}</div>
+                    {live && qty > 0 && (g.action === "REDUCE" || g.action === "SELL") && <div className="why warn">You hold {c}: use {g.action === "SELL" ? "Sell all" : "Sell 50%"} below to follow this.</div>}
+                  </div>);
+              })()}
 
               <div className="row"><span>You hold</span><span>{qty > 0 ? `${qty.toPrecision(5)} ${c}` : "nothing"}</span></div>
               {qty > 0 && <div className="row"><span>Cost / value now</span><span>{usd(cost)} / {usd(qty * mid)}</span></div>}

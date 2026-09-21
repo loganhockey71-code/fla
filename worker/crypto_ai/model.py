@@ -170,3 +170,11 @@ def predict_probability(model_row: dict, horizon_h: int, feature_row: pd.Series)
                 "pushes": "bullish" if contrib[i] > 0 else "bearish", "text": describe(names[i], float(x[0][i]))}
                for i in top]
     return p, drivers
+
+
+def predict_frame(model_row: dict, horizon_h: int, X: pd.DataFrame) -> np.ndarray:
+    """Vectorised calibrated P(up) for many rows at once (used to compare models on the same held-out rows)."""
+    booster = lgb.Booster(model_str=model_row["model_blob"][str(horizon_h)])
+    p_raw = booster.predict(X[model_row["feature_names"]].astype(float).values)
+    cal = model_row["calibration"][str(horizon_h)]
+    return _sigmoid(cal["a"] * (_logit(p_raw) - cal["center"]))

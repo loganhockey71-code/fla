@@ -99,5 +99,19 @@ export async function runChecks(): Promise<Check[]> {
   if (ev.overdue > 0) push("Evaluation engine", "error", `${ev.overdue} prediction(s) past their 24h/48h window without a result`);
   else if (ev.scored === 0) push("Evaluation engine", ev.pending ? "waiting" : "waiting", `nothing has reached its window yet; ${ev.pending} pending, first resolves ${ev.nxt ? new Date(ev.nxt as Date).toUTCString() : "n/a"}`);
   else push("Evaluation engine", "ok", `${ev.scored} scored, ${ev.pending} pending, none overdue`);
+  // ---- real-time watcher: is anything checking for sudden events?
+  const [sig] = await db`select max(created_at) t, count(*)::int n, count(*) filter (where trigger_kind <> 'scheduled')::int events from live_signals`;
+  const [lastSrc] = await db`select max(last_polled_at) t from source_registry`;
+  const lastCheck = Math.min(ageMin(snap?.ts as Date), ageMin(lastSrc?.t as Date));
+  if (!Number.isFinite(lastCheck)) push("Real-time watcher", "waiting", "the worker has not run yet");
+  else if (lastCheck > 90) push("Real-time watcher", "error", `last check ${fmt(lastCheck)} ago: sudden events are not being watched`);
+  else push("Real-time watcher", "ok", `checked ${fmt(lastCheck)} ago; ${sig.events} sudden-event signals and ${sig.n - sig.events} regular reads recorded. Latency is the run interval (use \`watch\` for ~1 min).`);
+
+  // ---- self-learning
+  const [lr] = await db`select (select count(*)::int from post_mortems) pm, (select count(*)::int from prediction_results r where r.signal_correct = false) wrong,
+                         (select count(*)::int from prediction_results r left join post_mortems m on m.prediction_id = r.prediction_id where r.signal_correct = false and m.id is null) missing,
+                         (select count(*)::int from learned_patterns) pats, (select count(*)::int from model_challenges) ch`;
+  if (lr.missing > 5) push("Self-learning", "error", `${lr.missing} wrong predictions have no post-mortem yet: the learning job is behind`);
+  else push("Self-learning", lr.wrong === 0 ? "waiting" : "ok", lr.wrong === 0 ? "no wrong predictions to learn from yet" : `${lr.pm} post-mortems for ${lr.wrong} wrong predictions; ${lr.pats} patterns tracked; ${lr.ch} retrain attempts (models only change if a challenger wins on unseen data)`);
   return out;
 }

@@ -328,10 +328,38 @@ def check_security(db) -> None:
     rec("INFO", "dashboard auth", "APP_PASSWORD is enforced in production builds; in `npm run dev` the dashboard is open on localhost (fine locally, never deploy that way)")
 
 
+# ------------------------------------------------------------------ 13. real-time signals + self-learning
+def check_learning(db, cfg) -> None:
+    section("13. Real-time signals and self-learning")
+    for tbl in ("live_signals", "post_mortems", "learned_patterns", "model_challenges"):
+        rec("PASS" if db.one("select to_regclass(%s) t", [tbl])["t"] else "FAIL", f"table {tbl} exists")
+    trig = {r["tgname"] for r in db.all("select t.tgname from pg_trigger t join pg_class c on c.oid=t.tgrelid where c.relname='post_mortems' and not t.tgisinternal")}
+    rec("PASS" if "post_mortems_no_update" in trig else "FAIL", "post-mortems are append-only (trigger installed)")
+    bad = db.all("select id from live_signals where action not in ('BUY','HOLD','REDUCE','SELL')")
+    rec("PASS" if not bad else "FAIL", "every signal is one of BUY / HOLD / REDUCE / SELL")
+    last = db.one("select max(created_at) t from live_signals")["t"]
+    rec("PASS" if last and age_min(last) < 7 * 60 + 60 else "FAIL", "a current signal exists for the coins", f"latest {age_min(last):.0f} min ago" if last else "none")
+    empty = db.one("select count(*) n from live_signals where reasons is null or jsonb_array_length(reasons) = 0 or explanation = ''")["n"]
+    rec("PASS" if empty == 0 else "FAIL", "every signal states its reasons", f"{empty} without")
+    missing = db.one("""select count(*) n from prediction_results r left join post_mortems m on m.prediction_id = r.prediction_id
+                        where r.signal_correct = false and m.id is null""")["n"]
+    rec("PASS" if missing <= 5 else "FAIL", "wrong predictions get post-mortems", f"{missing} waiting")
+    orphan = db.one("select count(*) n from post_mortems m join prediction_results r on r.prediction_id=m.prediction_id where r.signal_correct = true")["n"]
+    rec("PASS" if orphan == 0 else "FAIL", "no post-mortem exists for a correct prediction")
+    unexplained = db.all("select v.version from model_versions v where v.backtest_metrics ? 'promotion' and not exists (select 1 from model_challenges c where c.challenger_version = v.version and c.decision = 'promoted')")
+    rec("PASS" if not unexplained else "FAIL", "every automatic model replacement was a recorded, promoted challenge", f"{len(unexplained)} unexplained" if unexplained else "")
+    early = db.all("""select c.id from model_challenges c where c.decision in ('promoted','rejected') and c.trigger_info ? 'days_since_training'
+                      and (c.trigger_info->>'days_since_training')::float < %s and coalesce((c.trigger_info->>'forced')::boolean, false) = false""", [cfg["retrain_min_days"]])
+    rec("PASS" if not early else "FAIL", "no retrain was attempted before the required days/examples (forced test runs excluded)", f"{len(early)} early")
+    active = db.all("select symbol, variant, count(*) n from model_versions where is_active group by 1,2 having count(*) <> 1")
+    rec("PASS" if not active else "FAIL", "exactly one active model per coin and variant")
+    rec("INFO", "learning status", f"{db.one('select count(*) n from post_mortems')['n']} post-mortems, {db.one('select count(*) n from learned_patterns')['n']} patterns tracked, {db.one('select count(*) n from model_challenges')['n']} retrain attempts")
+
+
 def run(db) -> int:
     cfg = db.settings()
     for fn in (lambda: check_prices(db), check_keys, lambda: check_feeds(db), lambda: check_duplicates(db), lambda: check_predictions(db, cfg),
-               lambda: check_paper(db, cfg), lambda: check_evaluation(db, cfg), lambda: check_metrics(db, cfg), lambda: check_security(db)):
+               lambda: check_paper(db, cfg), lambda: check_evaluation(db, cfg), lambda: check_metrics(db, cfg), lambda: check_learning(db, cfg), lambda: check_security(db)):
         try:
             fn()
         except Exception as e:                                   # a crashing check is a failed check

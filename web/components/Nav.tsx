@@ -4,7 +4,7 @@ import { usePathname } from "next/navigation";
 
 const TABS = [
   ["/", "Dashboard"], ["/btc", "BTC"], ["/eth", "ETH"], ["/xrp", "XRP"], ["/events", "Events / Research"],
-  ["/trade", "Trade"], ["/predictions", "Predictions"], ["/trades", "Paper Trades"], ["/performance", "Performance"], ["/health", "Health"], ["/settings", "Settings"],
+  ["/trade", "Trade"], ["/signals", "Signals"], ["/learning", "Learning"], ["/predictions", "Predictions"], ["/trades", "Paper Trades"], ["/performance", "Performance"], ["/health", "Health"], ["/settings", "Settings"],
 ];
 
 export default function Nav() {

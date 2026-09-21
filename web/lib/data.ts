@@ -38,3 +38,16 @@ export async function scoredResults() {
            r.high_confidence, r.actual_return_pct::float as ret
     from prediction_results r join predictions p on p.id = r.prediction_id order by p.target_time`;
 }
+
+/** The most recent "what to do now" signal per coin (BUY / HOLD / REDUCE / SELL). Paper trading only. */
+export async function latestSignals() {
+  const rows = await sql()`select distinct on (symbol) * from live_signals order by symbol, created_at desc`;
+  return Object.fromEntries(rows.map((r) => [r.symbol as string, r])) as Record<string, Record<string, any>>;
+}
+
+export const ACTION_HELP: Record<string, string> = {
+  BUY: "open or add a small position",
+  HOLD: "do nothing",
+  REDUCE: "sell about half of what you hold",
+  SELL: "sell everything you hold",
+};

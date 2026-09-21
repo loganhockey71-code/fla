@@ -1,10 +1,5 @@
 """Sudden-move detector + automatic 'why did it move?' investigation."""
-from datetime import datetime, timedelta, timezone
-
 import pandas as pd
-
-from . import coinbase
-from .config import PRODUCTS, SYMBOLS
 
 WINDOWS_MIN = [5, 15, 30]
 OTHER_MOVE_MIN_PCT = 0.3        # another coin "also moved" if it went the same way by at least this much
@@ -32,7 +27,7 @@ def find_trigger(closes: pd.Series, vols: pd.Series, imbalance: float | None, cf
     reasons = []
     if move:
         reasons.append("price")
-    if spike >= cfg["volume_spike_x"] and abs(pct_move(closes, 5)) >= 0.3:
+    if (spike >= cfg["volume_spike_x"] and abs(pct_move(closes, 5)) >= 0.3) or spike >= 2 * cfg["volume_spike_x"]:
         reasons.append("volume")
     if imbalance is not None and abs(imbalance) >= OB_EXTREME and abs(pct_move(closes, 5)) >= 0.3:
         reasons.append("orderbook")
@@ -88,40 +83,3 @@ def headline(symbol: str, trig: dict, d: dict) -> str:
     verb = "dropped" if trig["pct"] < 0 else "rose"
     return (f"{symbol} {verb} {abs(trig['pct']):.1f}% in {trig['minutes']} minutes. "
             f"Most likely cause: {d['cause']}. Confidence: {d['confidence']}%.")
-
-
-def run_detector(db, cfg: dict, snaps: dict | None = None) -> list[dict]:
-    now = datetime.now(timezone.utc)
-    start = now - timedelta(minutes=95)
-    frames = {s: coinbase.closed_only(coinbase.candles(PRODUCTS[s], 60, start, now), 60, now) for s in SYMBOLS}
-    found = []
-    for s in SYMBOLS:
-        fr = frames[s]
-        if len(fr) < 65:
-            continue
-        snap = (snaps or {}).get(s, {})
-        trig = find_trigger(fr["close"], fr["volume"], snap.get("ob_imbalance"), cfg)
-        if not trig:
-            continue
-        if db.one("select 1 as x from events where kind='sudden_move' and %s = any(coins) and occurred_at > %s",
-                  [s, now - timedelta(minutes=30)]):
-            continue
-        others = {o: pct_move(frames[o]["close"], trig["window"]) for o in SYMBOLS if o != s and len(frames[o]) > trig["window"]}
-        news = db.all("""select title, source, case when origin_tier <= 2 then 'official' else 'media' end as source_tier,
-                                importance_score as importance from research_events
-                         where kind in ('news','legislation') and %s = any(affected_coins)
-                           and not (kind = 'legislation' and details->>'change' = 'new')   -- first sighting of an old bill is not a catalyst
-                           and coalesce(published_at, detected_at) > %s""", [s, now - timedelta(hours=6)])
-        d = diagnose(s, trig, others, snap.get("buy_pressure"), news)
-        text = headline(s, trig, d)
-        db.insert("events", {
-            "occurred_at": now, "kind": "sudden_move", "title": text.split(". Most likely")[0], "source": "Sudden-move detector",
-            "source_tier": None, "coins": [s], "sentiment": "positive" if trig["pct"] > 0 else "negative",
-            "importance": int(min(100, 50 + abs(trig["pct"]) * 10)), "confidence": d["confidence"],
-            "explanation": text,
-            "details": {"trigger": trig, "others_move_pct": others, "scope": d["scope"], "buy_pressure": snap.get("buy_pressure"),
-                        "coins_also_moved": d["coins_also_moved"], "news_considered": len(news),
-                        "linked_news": d["news_ref"]["title"] if d["news_ref"] else None},
-        })
-        found.append({"symbol": s, "text": text})
-    return found
