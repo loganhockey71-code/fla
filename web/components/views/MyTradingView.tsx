@@ -1,13 +1,22 @@
+import { revalidatePath } from "next/cache";
 import { getSettings, safe, sql } from "@/lib/db";
+import { yourMove } from "@/lib/advice";
 import { ACTION_HELP, latestPredictions, latestSignals } from "@/lib/data";
 import { COINS, Coin, cashOf, summarize } from "@/lib/manual";
 import { liveQuote } from "@/lib/quotes";
-import { pct, pctPts, price, signedUsd, tone, usd, when } from "@/lib/format";
+import { ago, pct, pctPts, price, signedUsd, tone, usd, when } from "@/lib/format";
 import { Empty, Pill, SetupError, Stat } from "@/components/Ui";
 import OrderForms, { QuickSell, SellEverything } from "@/components/OrderForms";
 import CashPlanPanel from "@/components/CashPlanPanel";
 import { pendingPlan, recentDecision } from "@/lib/cashplan_db";
 
+
+async function setAutopilot(form: FormData) {
+  "use server";
+  await sql()`insert into settings (key, value, updated_at) values ('autopilot_enabled', ${form.get("on") === "1" ? "true" : "false"}::jsonb, now())
+              on conflict (key) do update set value = excluded.value, updated_at = now()`;
+  revalidatePath("/trades");
+}
 
 type Advice = { predictions?: { horizon_h: number; signal: string; confidence: number }[] };
 
@@ -15,7 +24,7 @@ export default async function MyTradingView() {
   const { data, error } = await safe(async () => {
     const db = sql();
     const cfg = await getSettings();
-    const [quotes, preds, trades, stored, signals, plan, decided] = await Promise.all([
+    const [quotes, preds, trades, stored, signals, plan, decided, autoRows, autoStatus] = await Promise.all([
       Promise.all(COINS.map((c) => liveQuote(c))),
       latestPredictions(),
       db`select * from paper_trades where account = 'manual' order by id desc limit 500`,
@@ -23,11 +32,14 @@ export default async function MyTradingView() {
       latestSignals(),
       pendingPlan(db),
       recentDecision(db),
+      db`select id, symbol, status, opened_at, closed_at, exec_price, exit_price, quantity, amount_invested, pnl_usd, exit_reason, ai_advice from paper_trades
+         where account = 'manual' and (ai_advice->>'source' = 'autopilot' or exit_reason = 'autopilot_sell') order by id desc limit 60`,
+      db`select value from settings where key = 'autopilot_status'`,
     ]);
-    return { cfg, quotes, preds, trades, stored, signals, plan, decided };
+    return { cfg, quotes, preds, trades, stored, signals, plan, decided, autoRows, autoStatus };
   });
   if (error || !data) return <><h2 className="viewtitle">Manual trading</h2><SetupError error={error ?? "unknown"} /></>;
-  const { cfg, quotes, preds, trades, stored, signals, plan, decided } = data;
+  const { cfg, quotes, preds, trades, stored, signals, plan, decided, autoRows, autoStatus } = data;
 
   const q = Object.fromEntries(COINS.map((c, i) => [c, quotes[i]])) as Record<Coin, (typeof quotes)[number]>;
   const mids = Object.fromEntries(COINS.map((c, i) => [c, quotes[i]?.mid ?? (stored.find((r) => r.symbol === c)?.price as number) ?? 0])) as Record<Coin, number>;
@@ -41,10 +53,51 @@ export default async function MyTradingView() {
   const allLive = COINS.every((c) => !!q[c]);
   const ifSoldAll = held.reduce((a, c) => a + (c.ifSoldNet ?? 0), 0);
 
+  // ---- autopilot: what the AI did for you (buys are tagged in ai_advice, sells by exit_reason)
+  const auto = autoStatus[0]?.value as { at?: string; enabled?: boolean; made?: number; note?: string } | undefined;
+  const autoOn = !!cfg.autopilot_enabled;
+  type AutoEvent = { at: Date; side: "BUY" | "SELL"; coin: string; px: number; usd: number; pnl: number | null; why: string };
+  const autoEvents: AutoEvent[] = autoRows.flatMap((t): AutoEvent[] => {
+    const adv = t.ai_advice as { source?: string; why?: string } | null;
+    const out: AutoEvent[] = [];
+    if (adv?.source === "autopilot") out.push({ at: t.opened_at as Date, side: "BUY", coin: t.symbol as string, px: t.exec_price as number, usd: t.amount_invested as number, pnl: null, why: adv.why ?? "" });
+    if (t.exit_reason === "autopilot_sell") out.push({ at: t.closed_at as Date, side: "SELL", coin: t.symbol as string, px: t.exit_price as number, usd: (t.quantity as number) * (t.exit_price as number), pnl: t.pnl_usd as number, why: "" });
+    return out;
+  }).sort((a, b) => +new Date(b.at) - +new Date(a.at)).slice(0, 12);
+  const autoRealized = autoRows.filter((t) => t.exit_reason === "autopilot_sell").reduce((a, t) => a + ((t.pnl_usd as number) ?? 0), 0);
+  const staleH = auto?.at ? (Date.now() - new Date(auto.at).getTime()) / 3_600_000 : null;
+
   return (
     <>
       <h2 className="viewtitle">Manual paper trading</h2>
       <p className="sub">Buy and sell any time with fake money at live Coinbase prices (same {cfg.trading_fee_pct}% fee, {cfg.slippage_pct}% slippage and real spread as the AI). This is your own account, completely separate from the AI's test results. Everything happens on this page.</p>
+
+      <div className="card" style={{ marginTop: 14 }} id="autopilot">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <b style={{ fontSize: 16 }}>AI autopilot</b> <Pill kind={autoOn ? "BUY" : "HOLD"}>{autoOn ? "ON" : "OFF"}</Pill>
+            <div className="muted" style={{ fontSize: 13, marginTop: 4, maxWidth: 640 }}>
+              {autoOn ? "While you are away the AI trades this account for you (fake money): it buys when it leans up, sells when it leans down or a sudden event hits, and does nothing when it sees no edge."
+                      : "Off: nothing is traded unless you press the buttons yourself."} It puts at most 10% (20% when very confident) into one buy, never more than 40% of the account in one coin, and never more than your cash. It follows the same unproven signals shown below, so treat the result as a test.
+            </div>
+          </div>
+          <form action={setAutopilot}><input type="hidden" name="on" value={autoOn ? "0" : "1"} /><button className={autoOn ? "" : "primary"} type="submit">{autoOn ? "Turn autopilot off" : "Turn autopilot on"}</button></form>
+        </div>
+        {autoOn && (
+          <div className="why" style={{ marginTop: 8 }}>
+            {auto?.at ? <>Last check <b>{ago(auto.at)}</b>: {auto.note}</> : "It has not run yet. It runs each time the worker ticks (every 30 minutes on GitHub Actions, or about once a minute with the watch loop)."}
+            {staleH != null && staleH > 3 && <span className="warn"> The worker has not checked in for {staleH.toFixed(0)} h, so nothing is being traded. Check the worker.</span>}
+          </div>)}
+        {autoEvents.length > 0 && (
+          <div className="scroll" style={{ marginTop: 10 }}><table>
+            <thead><tr><th>When</th><th>Autopilot did</th><th className="num">Price</th><th className="num">Amount</th><th className="num">Result</th><th>Why</th></tr></thead>
+            <tbody>{autoEvents.map((e, i) => (
+              <tr key={i}><td>{when(e.at)}</td><td><Pill kind={e.side}>{e.side}</Pill> <b>{e.coin}</b></td><td className="num">{price(e.px)}</td><td className="num">{usd(e.usd)}</td>
+                <td className={`num ${tone(e.pnl)}`}>{e.pnl != null ? signedUsd(e.pnl) : "—"}</td><td className="muted">{e.why || "signal turned bearish"}</td></tr>))}</tbody></table>
+            <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>Profit locked in by autopilot sales so far: <b className={tone(autoRealized)}>{signedUsd(autoRealized)}</b></div>
+          </div>)}
+        {autoOn && !autoEvents.length && auto?.at && <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>No autopilot trades yet. It only trades when the AI has a clear signal.</div>}
+      </div>
 
       {!plan && decided && (() => {
         const ex = decided.executed as { bought?: { coin: string; usd: number }[] } | null;
@@ -106,8 +159,20 @@ export default async function MyTradingView() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><b style={{ fontSize: 18 }}>{c}</b><span className="muted">{quotes[i] ? "live price" : "stored price"}</span></div>
               <div style={{ fontSize: 24, fontWeight: 700, margin: "4px 0 10px" }}>{price(mids[c])}</div>
 
+              {(() => {
+                const live = !!g && new Date(g.expires_at).getTime() > Date.now();
+                const action = (live ? g.action : p24?.signal ?? "HOLD") as "BUY" | "HOLD" | "REDUCE" | "SELL";
+                const m = yourMove(c, action, h.value, cash);
+                return (
+                  <div className="advice" style={{ borderColor: "var(--accent)" }}>
+                    <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em" }}>Your move (based on what you hold)</div>
+                    <div style={{ fontSize: 20, margin: "4px 0" }}><Pill kind={m.kind}>{m.label}</Pill></div>
+                    <div className="why">{m.text}</div>
+                  </div>);
+              })()}
+
               <div className="advice">
-                <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em" }}>AI advice (unproven)</div>
+                <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em" }}>AI signal (unproven)</div>
                 {p24 ? (
                   <>
                     <div style={{ fontSize: 20, margin: "4px 0" }}><Pill kind={p24.signal}>{p24.signal}</Pill> <b>{Math.round(p24.confidence * 100)}%</b> <span className="muted" style={{ fontSize: 12 }}>24h</span>

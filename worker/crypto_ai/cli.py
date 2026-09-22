@@ -12,7 +12,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 
 
-from . import coinbase, coingecko, evaluator, metrics, paper, predictor, realtime
+from . import autopilot, coinbase, coingecko, evaluator, metrics, paper, predictor, realtime
 from . import learning
 from .research import registry
 from .config import BAR, PRODUCTS, SYMBOLS
@@ -109,6 +109,8 @@ def tick(db: DB) -> None:
     step("predict", lambda: len(predictor.run_predictions(db, cfg)))
     step("standing", lambda: realtime.publish_standing(db, cfg))
     if len(prices) == len(SYMBOLS):
+        step("autopilot", lambda: autopilot.run(db, cfg, snaps)["made"])
+    if len(prices) == len(SYMBOLS):
         step("portfolio", lambda: round(paper.snapshot_portfolio(db, cfg, prices)["total_value"], 2))
     step("metrics", lambda: metrics.recompute(db))
     step("learn", lambda: learning.run_all(db, cfg))
@@ -123,8 +125,12 @@ def watch(db: DB, every: int) -> None:
             cfg = db.settings()
             registry.run_due(db, only=official, interval_s=90)
             snaps = {s: predictor.micro_snapshot(s) for s in SYMBOLS}
-            for f in realtime.run_watch_cycle(db, cfg, snaps):
+            fresh = realtime.run_watch_cycle(db, cfg, snaps)
+            for f in fresh:
                 print(f"[{datetime.now(timezone.utc):%H:%M:%S}Z] {f['urgency'].upper()} {f['text']}", flush=True)
+            if fresh:                                    # a sudden event just happened: let the autopilot react at once
+                for line in autopilot.run(db, cfg, snaps).get("trades", []):
+                    print(f"[{datetime.now(timezone.utc):%H:%M:%S}Z] AUTOPILOT {line}", flush=True)
         except Exception:
             traceback.print_exc()
             db = DB()

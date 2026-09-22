@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { getSettings, safe, sql } from "@/lib/db";
 import { Coin } from "@/lib/manual";
-import { coinSnapshots, latestNews, manualPortfolio } from "@/lib/views";
+import { coinSnapshots, heldValues, latestNews, manualPortfolio } from "@/lib/views";
+import { yourMove } from "@/lib/advice";
 import { pendingPlan } from "@/lib/cashplan_db";
 import { ago, price, pctPts, signedUsd, tone, usd } from "@/lib/format";
 import { Empty, Pill, SetupError } from "@/components/Ui";
@@ -18,11 +19,11 @@ export default async function Dashboard() {
     const cfg = await getSettings();
     const snaps = await coinSnapshots(db);
     const mids = Object.fromEntries(snaps.map((s) => [s.coin, s.price ?? 0])) as Record<Coin, number>;
-    const [news, port, plan] = await Promise.all([latestNews(db, 5), manualPortfolio(db, cfg.starting_balance, mids), pendingPlan(db)]);
-    return { cfg, snaps, news, port, plan };
+    const [news, port, plan, held] = await Promise.all([latestNews(db, 5), manualPortfolio(db, cfg.starting_balance, mids), pendingPlan(db), heldValues(db, mids)]);
+    return { cfg, snaps, news, port, plan, held };
   });
   if (error || !data) return <><h1>Dashboard</h1><SetupError error={error ?? "unknown"} /></>;
-  const { cfg, snaps, news, port, plan } = data;
+  const { cfg, snaps, news, port, plan, held } = data;
 
   return (
     <>
@@ -50,18 +51,21 @@ export default async function Dashboard() {
         <Card title="AI Trading Signals" action={<Link href="/signals" className="more">View analysis →</Link>}>
           <p className="muted small" style={{ margin: "-4px 0 10px" }}>Based on market data, news and technical analysis. Confidence near 50% means the AI sees no clear edge. Its advice is unproven.</p>
           <div className="scroll flat"><table className="signals">
-            <thead><tr><th>Coin</th><th>Signal</th><th>Confidence</th><th>Reason</th></tr></thead>
-            <tbody>{snaps.map((s) => (
+            <thead><tr><th>Coin</th><th title="the AI's signal, translated for what you hold right now">Your move</th><th>Confidence</th><th>Reason</th></tr></thead>
+            <tbody>{snaps.map((s) => {
+              const move = yourMove(s.coin, s.action, held[s.coin] ?? 0, port.cash);
+              return (
               <tr key={s.coin}>
                 <td><span className="rowcoin"><CoinIcon coin={s.coin} size={34} /><span><b>{s.coin}</b><br /><span className="muted small">{NAME[s.coin]}</span></span></span></td>
-                <td><Pill kind={s.action}>{s.action}</Pill>{s.sudden && <div className="muted small" style={{ marginTop: 3 }}>sudden event</div>}</td>
+                <td><Pill kind={move.kind}>{move.label}</Pill><div className="muted small" style={{ marginTop: 3 }}>{move.text}{s.sudden ? " (sudden event)" : ""}</div></td>
                 <td style={{ minWidth: 150 }}>
                   {s.confidence != null ? (
                     <><b>{Math.round(s.confidence * 100)}%</b><div className="bar"><i style={{ width: `${Math.round(s.confidence * 100)}%`, background: BAR[s.action] }} /></div></>
                   ) : <span className="muted">—</span>}
                 </td>
                 <td className="reason">{s.reason}</td>
-              </tr>))}</tbody></table></div>
+              </tr>);
+            })}</tbody></table></div>
         </Card>
 
         <Card title="Latest News & Market Impact" action={<Link href="/news" className="more">View all news →</Link>}>

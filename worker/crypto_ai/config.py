@@ -29,6 +29,7 @@ DEFAULT_SETTINGS = {
     "sudden_move_window_min": 15,
     "volume_spike_x": 3.0,
     "trade_variant": "market",
+    "autopilot_enabled": True,     # the AI trades the manual paper account while you are away (turn off in Settings)
     "retrain_min_days": 30, "retrain_min_new_scored": 100, "retrain_holdout_days": 14, "retrain_min_improvement": 0.002,
     "retrain_max_p_value": 0.10, "pattern_min_examples": 30, "news_trigger_importance": 60, "signal_cooldown_min": 30,
 }
