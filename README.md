@@ -22,7 +22,7 @@ worker/crypto_ai/     Python worker + ML            .github/workflows/  free sch
    python -m crypto_ai.cli tick       # first predictions + paper trades
    ```
 3. **Keep it running** — pick one:
-   - *GitHub Actions* (free): push this folder to a repo, add secrets `DATABASE_URL`, `FRED_API_KEY`, `CONGRESS_API_KEY`. `worker.yml` runs `tick` every 30 min. (Private repo = 2,000 free min/month; 30-min cadence fits.)
+   - *GitHub Actions* (free, needs a PUBLIC repo): push this folder to a repo, add secrets `DATABASE_URL`, `FRED_API_KEY`, `CONGRESS_API_KEY`. `worker.yml` runs `tick` every 15 min. (A private repo only gets 2,000 free Actions min/month, ~2 min/run - that covers hourly, not 15-min. Make the repo public for unlimited free minutes, or widen the cron back out if it must stay private.)
    - *Your own machine* (near real-time): `python -m crypto_ai.cli loop --every 300`
 4. **Dashboard**: import the repo in Vercel, root directory `web`, env vars `DATABASE_URL` and `APP_PASSWORD` (not the research keys: the dashboard never uses them). The site refuses to serve without a password.
 
@@ -91,7 +91,7 @@ Sources and trust tier (1 = most trusted) - polled on their own schedule by `pyt
 - **Signal threshold 52%** (Settings). Calibrated probabilities from crypto models sit near 50%; at 55% the current models almost never trade, which would leave nothing to test.
 - **Order-book / spread / buy-sell pressure** are collected and stored with every prediction, but v1 models train only on candle features: Coinbase has no free history of order-book data, so training on it would mean training on nothing. After a few months of logged snapshots they can be added as model inputs.
 - **Coinbase, not Binance**: Binance.com blocks US IPs. REST polling is used instead of WebSockets so it works on free schedulers.
-- Sudden-move detection reads 1-minute candles, so a 30-min scheduled run still sees moves from the last 90 minutes; run `loop` locally for real-time alerts.
+- Sudden-move detection reads 1-minute candles, so even a 15-min scheduled run can miss the very start of a fast move; run `loop` locally for real-time alerts.
 
 ## Commands
 ```bash
