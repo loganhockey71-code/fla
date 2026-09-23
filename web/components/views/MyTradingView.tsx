@@ -162,7 +162,8 @@ export default async function MyTradingView() {
               {(() => {
                 const live = !!g && new Date(g.expires_at).getTime() > Date.now();
                 const action = (live ? g.action : p24?.signal ?? "HOLD") as "BUY" | "HOLD" | "REDUCE" | "SELL";
-                const m = yourMove(c, action, h.value, cash);
+                const confidence = live ? (g.model_bull_prob != null ? Math.max(g.model_bull_prob, 1 - g.model_bull_prob) : null) : p24?.confidence ?? null;
+                const m = yourMove(c, action, h.value, cash, { confidence, totalValue: total, cfg });
                 return (
                   <div className="advice" style={{ borderColor: "var(--accent)" }}>
                     <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em" }}>Your move (based on what you hold)</div>

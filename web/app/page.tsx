@@ -53,7 +53,7 @@ export default async function Dashboard() {
           <div className="scroll flat"><table className="signals">
             <thead><tr><th>Coin</th><th title="the AI's signal, translated for what you hold right now">Your move</th><th>Confidence</th><th>Reason</th></tr></thead>
             <tbody>{snaps.map((s) => {
-              const move = yourMove(s.coin, s.action, held[s.coin] ?? 0, port.cash);
+              const move = yourMove(s.coin, s.action, held[s.coin] ?? 0, port.cash, { confidence: s.confidence, totalValue: port.total, cfg });
               return (
               <tr key={s.coin}>
                 <td><span className="rowcoin"><CoinIcon coin={s.coin} size={34} /><span><b>{s.coin}</b><br /><span className="muted small">{NAME[s.coin]}</span></span></span></td>
