@@ -104,6 +104,17 @@ def test_event_features_nan_before_collection_and_ignore_the_future():
     assert rf.event_frame(data, "BTC", idx)["ev_impact_24h"].iloc[2] == 0            # other coins unaffected
 
 
+def test_prediction_markets_dont_crash_when_the_24h_window_is_empty():
+    """Regression: pm HAS rows overall, but none in this row's 24h window - used to raise KeyError('platform')
+    because filtering with .apply() on an empty Series can strip every column, breaking the groupby."""
+    pm = pd.DataFrame([{"platform": "kalshi", "market_id": "m1", "title": "t", "coins": ["BTC"], "direction": 1,
+                        "yes_prob": 0.6, "volume_24h": 10.0, "captured_at": pd.Timestamp("2026-01-10", tz="UTC")}])
+    data = {"macro": {}, "events": pd.DataFrame(), "pm": pm, "start": pd.Timestamp("2026-01-01", tz="UTC")}
+    idx = pd.DatetimeIndex(["2026-01-01 00:00", "2026-01-10 12:00"], tz="UTC")   # first row's window has no pm rows at all
+    f = rf.event_frame(data, "BTC", idx)
+    assert f["pm_max_move_24h"].iloc[0] == 0.0
+
+
 # ---------------------------------------------------------------- sources
 def test_fred_macro_events():
     d = pd.Timestamp
