@@ -1,6 +1,7 @@
 import { revalidatePath } from "next/cache";
 import { getSettings, safe, sql } from "@/lib/db";
 import { yourMove } from "@/lib/advice";
+import { summarizeAutopilot } from "@/lib/autopilotStats";
 import { ACTION_HELP, latestPredictions, latestSignals } from "@/lib/data";
 import { COINS, Coin, cashOf, summarize } from "@/lib/manual";
 import { liveQuote } from "@/lib/quotes";
@@ -32,8 +33,8 @@ export default async function MyTradingView() {
       latestSignals(),
       pendingPlan(db),
       recentDecision(db),
-      db`select id, symbol, status, opened_at, closed_at, exec_price, exit_price, quantity, amount_invested, pnl_usd, exit_reason, ai_advice from paper_trades
-         where account = 'manual' and (ai_advice->>'source' = 'autopilot' or exit_reason = 'autopilot_sell') order by id desc limit 60`,
+      db`select id, symbol, status, opened_at, closed_at, exec_price, exit_price, quantity, amount_invested, pnl_usd, pnl_pct, exit_reason, ai_advice from paper_trades
+         where account = 'manual' and (ai_advice->>'source' = 'autopilot' or exit_reason = 'autopilot_sell') order by id desc limit 2000`,
       db`select value from settings where key = 'autopilot_status'`,
     ]);
     return { cfg, quotes, preds, trades, stored, signals, plan, decided, autoRows, autoStatus };
@@ -64,7 +65,7 @@ export default async function MyTradingView() {
     if (t.exit_reason === "autopilot_sell") out.push({ at: t.closed_at as Date, side: "SELL", coin: t.symbol as string, px: t.exit_price as number, usd: (t.quantity as number) * (t.exit_price as number), pnl: t.pnl_usd as number, why: "" });
     return out;
   }).sort((a, b) => +new Date(b.at) - +new Date(a.at)).slice(0, 12);
-  const autoRealized = autoRows.filter((t) => t.exit_reason === "autopilot_sell").reduce((a, t) => a + ((t.pnl_usd as number) ?? 0), 0);
+  const autoStats = summarizeAutopilot(autoRows as never);
   const staleH = auto?.at ? (Date.now() - new Date(auto.at).getTime()) / 3_600_000 : null;
 
   return (
@@ -77,7 +78,7 @@ export default async function MyTradingView() {
           <div>
             <b style={{ fontSize: 16 }}>AI autopilot</b> <Pill kind={autoOn ? "BUY" : "HOLD"}>{autoOn ? "ON" : "OFF"}</Pill>
             <div className="muted" style={{ fontSize: 13, marginTop: 4, maxWidth: 640 }}>
-              {autoOn ? "While you are away the AI trades this account for you (fake money): it buys when it leans up, sells when it leans down or a sudden event hits, and does nothing when it sees no edge."
+              {autoOn ? "The AI trades this account for you, all the time, buying, selling and holding on its own (fake money) — it runs on a timer regardless of whether you're at your computer. It buys when it leans up, sells when it leans down or a sudden event hits, and does nothing when it sees no edge."
                       : "Off: nothing is traded unless you press the buttons yourself."} It puts at most 10% (20% when very confident) into one buy, never more than 40% of the account in one coin, and never more than your cash. It follows the same unproven signals shown below, so treat the result as a test.
             </div>
           </div>
@@ -85,8 +86,15 @@ export default async function MyTradingView() {
         </div>
         {autoOn && (
           <div className="why" style={{ marginTop: 8 }}>
-            {auto?.at ? <>Last check <b>{ago(auto.at)}</b>: {auto.note}</> : "It has not run yet. It runs each time the worker ticks (every 30 minutes on GitHub Actions, or about once a minute with the watch loop)."}
+            {auto?.at ? <>Last check <b>{ago(auto.at)}</b>: {auto.note}</> : "It has not run yet. It runs each time the worker ticks (every 15 minutes on GitHub Actions, or instantly on a sudden event with the watch loop)."}
             {staleH != null && staleH > 3 && <span className="warn"> The worker has not checked in for {staleH.toFixed(0)} h, so nothing is being traded. Check the worker.</span>}
+          </div>)}
+        {autoStats.closed > 0 && (
+          <div className="grid g4" style={{ marginTop: 10 }}>
+            <Stat label="Autopilot win rate" cls={tone((autoStats.winRate ?? 0) - 0.5)} value={autoStats.winRate != null ? pctPts(autoStats.winRate * 100) : "—"} sub={`${autoStats.wins} of ${autoStats.closed} sales profitable`} />
+            <Stat label="Avg P/L per sale" cls={tone(autoStats.avgPnlPct)} value={autoStats.avgPnlPct != null ? pctPts(autoStats.avgPnlPct) : "—"} />
+            <Stat label="Profit locked in" cls={tone(autoStats.realized)} value={signedUsd(autoStats.realized)} sub="realised, after fees" />
+            <Stat label="Open positions from autopilot" value={autoStats.openPositions} />
           </div>)}
         {autoEvents.length > 0 && (
           <div className="scroll" style={{ marginTop: 10 }}><table>
@@ -94,7 +102,6 @@ export default async function MyTradingView() {
             <tbody>{autoEvents.map((e, i) => (
               <tr key={i}><td>{when(e.at)}</td><td><Pill kind={e.side}>{e.side}</Pill> <b>{e.coin}</b></td><td className="num">{price(e.px)}</td><td className="num">{usd(e.usd)}</td>
                 <td className={`num ${tone(e.pnl)}`}>{e.pnl != null ? signedUsd(e.pnl) : "—"}</td><td className="muted">{e.why || "signal turned bearish"}</td></tr>))}</tbody></table>
-            <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>Profit locked in by autopilot sales so far: <b className={tone(autoRealized)}>{signedUsd(autoRealized)}</b></div>
           </div>)}
         {autoOn && !autoEvents.length && auto?.at && <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>No autopilot trades yet. It only trades when the AI has a clear signal.</div>}
       </div>
