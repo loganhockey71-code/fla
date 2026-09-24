@@ -1,5 +1,7 @@
-"""LightGBM models: one per coin, one booster per horizon (24h / 48h).
+"""LightGBM models: one model row per coin, one booster per horizon (24h / 48h).
 
+Each booster is POOLED: it learns from all three coins' history at once (with `coin_id` as an input), which triples the
+training data; calibration and backtest metrics are still fitted per coin on that coin's own out-of-sample rows.
 Training is walk-forward with an embargo gap so no training label overlaps the test window.
 The out-of-sample results are stored as BACKTEST metrics on the model version and are never
 mixed with live paper-trading results.
@@ -14,7 +16,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import brier_score_loss, roc_auc_score
 
 from .config import HORIZONS
-from .features import MODEL_FEATURES, compute_features, describe, make_labels
+from .features import COIN_ID, MODEL_FEATURES, compute_features, describe, make_labels
 
 PARAMS = dict(
     objective="binary", n_estimators=200, learning_rate=0.03, num_leaves=8, min_child_samples=100,
@@ -49,16 +51,22 @@ def _fit(X, y):
     return lgb.LGBMClassifier(**PARAMS).fit(X, y)
 
 
-def walk_forward(d: pd.DataFrame, horizon_h: int, cols: list[str], folds: int = 5) -> pd.DataFrame:
-    n = len(d)
+def walk_forward(d: pd.DataFrame, horizon_h: int, cols: list[str], folds: int = 5, test_mask: np.ndarray | None = None) -> pd.DataFrame:
+    """Folds are cut by TIME, so a pooled frame (several coins sharing timestamps) never trains on one coin's future
+    while testing another. test_mask picks which rows are scored (e.g. one coin); training always uses every row."""
+    times = d.index.unique().sort_values()
+    n = len(times)
     start = n // 2
     block = (n - start) // folds
     out = []
     for k in range(folds):
-        t0 = start + k * block
-        t1 = n if k == folds - 1 else t0 + block
-        train = d.iloc[: max(t0 - horizon_h, 0)]      # embargo: drop rows whose label reaches into the test block
-        test = d.iloc[t0:t1]
+        t0 = times[start + k * block]
+        t1 = None if k == folds - 1 else times[start + (k + 1) * block]
+        train = d[d.index < t0 - pd.Timedelta(hours=horizon_h)]      # embargo: drop rows whose label reaches into the test block
+        in_test = (d.index >= t0) & ((d.index < t1) if t1 is not None else True)
+        if test_mask is not None:
+            in_test &= test_mask
+        test = d[in_test]
         if len(train) < 500 or train["y"].nunique() < 2 or test.empty:
             continue
         m = _fit(train[cols], train["y"])
@@ -109,19 +117,25 @@ def simulate(oos: pd.DataFrame, horizon_h: int, cfg: dict) -> dict:
 
 def train_symbol(symbol: str, frames: dict[str, pd.DataFrame], cfg: dict, variant: str = "market", research: dict | None = None) -> dict:
     """variant 'market' = candle features only. 'research' = the same plus point-in-time macro + event features."""
-    feats = compute_features(frames, symbol)
-    cols = list(MODEL_FEATURES)
+    coins = [s for s in COIN_ID if s in frames and len(frames[s])]         # pool every coin we have candles for
+    all_feats = {}
+    cols = list(MODEL_FEATURES) + ["coin_id"]
+    for s in coins:
+        all_feats[s] = compute_features(frames, s)
+        if variant == "research":
+            from .research.features import RESEARCH_FEATURES, research_frame
+            all_feats[s] = all_feats[s].join(research_frame(research, s, all_feats[s].index))
     if variant == "research":
-        from .research.features import RESEARCH_FEATURES, research_frame
-        feats = feats.join(research_frame(research, symbol, feats.index))
         cols += RESEARCH_FEATURES
+    feats = all_feats[symbol]
     blobs, cals, metrics = {}, {}, {}
     n_samples = 0
     for h in HORIZONS:
-        d = _dataset(feats, h, cols)
-        if len(d) < 1500:
-            raise RuntimeError(f"{symbol} {h}h: only {len(d)} usable samples - fetch more history")
-        oos = walk_forward(d, h, cols)
+        own = _dataset(feats, h, cols)
+        if len(own) < 1500:
+            raise RuntimeError(f"{symbol} {h}h: only {len(own)} usable samples - fetch more history")
+        d = pd.concat([own] + [_dataset(all_feats[s], h, cols) for s in coins if s != symbol])
+        oos = walk_forward(d, h, cols, test_mask=(d["coin_id"] == COIN_ID[symbol]).values)
         cal = fit_calibration(oos)
         oos["p"] = _sigmoid(cal["a"] * (_logit(oos["p_raw"]) - cal["center"]))
         pred_up = oos["p"] > 0.5

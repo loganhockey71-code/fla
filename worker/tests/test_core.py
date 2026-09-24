@@ -21,6 +21,26 @@ def test_features_ignore_the_future(frames):
     pd.testing.assert_frame_equal(base.iloc[: K + 1][MODEL_FEATURES], changed.iloc[: K + 1][MODEL_FEATURES])
 
 
+def test_multiday_features_ignore_the_future_too():
+    """Same check past the 30-day warm-up, so the long-lookback features are actually covered."""
+    fr = synthetic_frames(n=4200, seed=2)
+    K = 3600
+    base = compute_features(fr, "XRP")
+    tampered = {s: f.copy() for s, f in fr.items()}
+    for f in tampered.values():
+        f.iloc[K + 1:, :] = f.iloc[K + 1:, :] * 0.4
+    assert base.iloc[K][MODEL_FEATURES].notna().all()
+    pd.testing.assert_frame_equal(base.iloc[: K + 1][MODEL_FEATURES], compute_features(tampered, "XRP").iloc[: K + 1][MODEL_FEATURES])
+
+
+def test_live_window_fills_every_feature():
+    """predictor.live_frames fetches LOOKBACK_BARS + 100 candles; that must be enough for every model input."""
+    from crypto_ai.features import LOOKBACK_BARS
+    fr = {s: f.iloc[-(LOOKBACK_BARS + 100):] for s, f in synthetic_frames(n=4200, seed=4).items()}
+    row = compute_features(fr, "ETH").iloc[-1]
+    assert row[MODEL_FEATURES + ["coin_id"]].notna().all()
+
+
 def test_asof_is_candle_close(frames):
     f = compute_features(frames, "BTC")
     assert f.index[0] == frames["BTC"].index[0] + pd.Timedelta(minutes=15)
@@ -153,3 +173,21 @@ def test_training_pipeline_runs_and_does_not_invent_an_edge(cfg):
         assert bt["share_p_above_threshold"] < 0.5
         assert m["calibration"][h]["a"] >= 0          # calibration can never flip the model
     assert set(m["model_blob"]) == {"24", "48"}
+    assert "coin_id" in m["feature_names"]
+
+
+def test_pooled_walk_forward_scores_only_this_coin_and_never_trains_on_the_future():
+    from crypto_ai import model
+    fr = synthetic_frames(n=8000, seed=6)
+    cols = MODEL_FEATURES + ["coin_id"]
+    d = pd.concat([model._dataset(compute_features(fr, s), 24, cols) for s in ("BTC", "ETH", "XRP")])
+    seen = []
+    real_fit = model._fit
+    model._fit = lambda X, y: (seen.append(X.index.max()), real_fit(X, y))[1]
+    try:
+        oos = model.walk_forward(d, 24, cols, test_mask=(d["coin_id"] == 1).values)
+    finally:
+        model._fit = real_fit
+    assert len(oos) and set(d.loc[d["coin_id"] == 1].index) >= set(oos.index)            # only ETH rows are scored
+    for k, g in oos.groupby("fold"):
+        assert seen[int(k)] < g.index.min() - pd.Timedelta(hours=24)                        # embargo holds across all coins

@@ -18,7 +18,7 @@ import pandas as pd
 from scipy.stats import binomtest
 from sklearn.metrics import brier_score_loss, roc_auc_score
 
-from ..config import BAR, HORIZONS, SYMBOLS
+from ..config import BAR, HORIZONS, SYMBOLS, TRAIN_DAYS
 from ..features import MODEL_FEATURES, compute_features, make_labels
 from ..model import predict_frame, simulate, train_symbol
 
@@ -139,7 +139,7 @@ def maybe_retrain(db, cfg: dict, force: bool = False, only: tuple[str, str] | No
                 out.append({"symbol": symbol, "variant": variant, "decision": "not_due", "reason": info.get("why", "")})
                 continue
             if frames is None:
-                frames = load_frames(db, days=400, topup=True)
+                frames = load_frames(db, days=TRAIN_DAYS, topup=True)   # same history as `train`, so a challenger isn't handicapped
                 from ..research import features as rfeat
                 rdata = rfeat.load(db)
             r = challenge(db, cfg, symbol, variant, frames, rdata, champ, info)

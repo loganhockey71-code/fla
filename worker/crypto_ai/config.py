@@ -9,6 +9,7 @@ PRODUCTS = {"BTC": "BTC-USD", "ETH": "ETH-USD", "XRP": "XRP-USD"}
 COINGECKO_IDS = {"BTC": "bitcoin", "ETH": "ethereum", "XRP": "ripple"}
 HORIZONS = [24, 48]
 BAR = 900  # seconds; the model works on 15-minute candles
+TRAIN_DAYS = 1095  # ~3 years of free Coinbase history: more market regimes than one ~9-month stretch
 
 # Mirrors the `settings` table defaults so the code works before anything is edited in the UI.
 DEFAULT_SETTINGS = {

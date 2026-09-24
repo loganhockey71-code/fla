@@ -1,6 +1,6 @@
 # Crypto AI Lab — does this AI predictor actually work?
 
-Private **paper-trading** app for BTC, ETH and XRP. It makes 24h/48h predictions with per-coin LightGBM models, "trades" $1,000 of **fake** money at **real** Coinbase prices (fees, spread and slippage included), scores every prediction when its window ends, and shows whether the results are distinguishable from luck at 30/60/90/180 days.
+Private **paper-trading** app for BTC, ETH and XRP. It makes 24h/48h predictions with LightGBM models (trained on all three coins at once, calibrated per coin), "trades" $1,000 of **fake** money at **real** Coinbase prices (fees, spread and slippage included), scores every prediction when its window ends, and shows whether the results are distinguishable from luck at 30/60/90/180 days.
 
 There is no exchange or brokerage code anywhere. Nothing here can place a real order.
 
@@ -18,7 +18,7 @@ worker/crypto_ai/     Python worker + ML            .github/workflows/  free sch
    pip install -r requirements.txt
    cp ../.env.example ../.env        # fill in DATABASE_URL
    python -m crypto_ai.cli research --force   # FRED history + Congress + feeds + prediction markets (needs FRED_API_KEY, CONGRESS_API_KEY in .env)
-   python -m crypto_ai.cli train      # downloads ~270 days of free Coinbase candles, ~3 min
+   python -m crypto_ai.cli train      # downloads ~3 years of free Coinbase candles, ~10 min
    python -m crypto_ai.cli tick       # first predictions + paper trades
    ```
 3. **Keep it running** — pick one:
@@ -89,6 +89,11 @@ Sources and trust tier (1 = most trusted) - polled on their own schedule by `pyt
 - **Spot, long-only.** BUY opens a long that exits at the horizon; SELL can only close an existing long (otherwise logged as *skipped*). Shorting would need leverage/margin, which is excluded.
 - **Position limits**: 10% of portfolio (20% if confidence ≥ 75%), capped by cash. One open position per coin per horizon.
 - **Signal threshold 52%** (Settings). Calibrated probabilities from crypto models sit near 50%; at 55% the current models almost never trade, which would leave nothing to test.
+- **What the model learns from** (chosen by testing every change on the same unseen year of real data, Sept 2025 - Sept 2026):
+  - *3 years of history* instead of ~9 months, and *one pooled model* for BTC, ETH and XRP (with `coin_id` as an input), which triples the data. Calibration and backtest metrics stay per coin.
+  - *Multi-day features* (3/7/30-day returns, 7-day volatility and volume, distance from the 30-day high/low, BTC's 7-day move) plus *hour of day / day of week*.
+  - Together these raised the mean out-of-sample AUC from ~0.52 to ~0.56. That is a small but consistent edge in direction, still **not** enough to beat ~1% round-trip costs in the backtest at any signal threshold.
+  - Tried and rejected because they made it worse: dropping small moves from training (a "dead zone"), a cost-aware "up more than fees" label, weighting big moves, the Crypto Fear & Greed index, and multi-day features with only 9 months of history (they memorise regimes).
 - **Order-book / spread / buy-sell pressure** are collected and stored with every prediction, but v1 models train only on candle features: Coinbase has no free history of order-book data, so training on it would mean training on nothing. After a few months of logged snapshots they can be added as model inputs.
 - **Coinbase, not Binance**: Binance.com blocks US IPs. REST polling is used instead of WebSockets so it works on free schedulers.
 - Sudden-move detection reads 1-minute candles, so even a 15-min scheduled run can miss the very start of a fast move; run `loop` locally for real-time alerts.
@@ -104,5 +109,5 @@ python -m crypto_ai.cli research-loop      # forever, each source at its own int
 python -m crypto_ai.cli watch [--every 60]  # near-real-time sudden-event watcher
 python -m crypto_ai.cli learn [--force-retrain]  # post-mortems, patterns, guarded retrain check
 python -m crypto_ai.cli selfcheck         # read-only end-to-end check of the running system (also see the /health page)
-cd worker && python -m pytest              # 30 tests; set TEST_DATABASE_URL to a FRESH SCRATCH Postgres to also run the dedupe + full paper-trading e2e tests
+cd worker && python -m pytest              # 70 tests; set TEST_DATABASE_URL to a FRESH SCRATCH Postgres to also run the dedupe + full paper-trading e2e tests
 ```

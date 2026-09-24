@@ -5,7 +5,7 @@ name: train-models
 on:
   workflow_dispatch:
     inputs:
-      days: { description: "Days of history", default: "270" }
+      days: { description: "Days of history", default: "1095" }
 
 jobs:
   train:

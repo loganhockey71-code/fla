@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from . import autopilot, coinbase, coingecko, evaluator, metrics, paper, predictor, realtime
 from . import learning
 from .research import registry
-from .config import BAR, PRODUCTS, SYMBOLS
+from .config import BAR, PRODUCTS, SYMBOLS, TRAIN_DAYS
 from .db import DB, JsonList
 from .model import train_symbol
 
@@ -147,7 +147,7 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("train")
-    t.add_argument("--days", type=int, default=270)
+    t.add_argument("--days", type=int, default=TRAIN_DAYS)
     t.add_argument("--variant", choices=["market", "research"], help="train only this variant")
     sub.add_parser("tick")
     l = sub.add_parser("loop")

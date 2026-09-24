@@ -140,7 +140,7 @@ def learnable_frames(days=300, seed=5):
     for i, s in enumerate(("BTC", "ETH", "XRP")):
         drift = np.zeros(n)
         for t in range(1, n):
-            drift[t] = 0.998 * drift[t - 1] + rng.normal(0, 2e-5)
+            drift[t] = 0.998 * drift[t - 1] + rng.normal(0, 4e-5)
         close = 100 * (i + 1) * np.exp(np.cumsum(drift + rng.normal(0, 0.002, n)))
         out[s] = pd.DataFrame({"open": close, "high": close * 1.001, "low": close * 0.999, "close": close, "volume": rng.uniform(50, 150, n)}, index=idx)
     return out
