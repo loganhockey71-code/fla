@@ -117,6 +117,20 @@ def tick(db: DB) -> None:
     print(f"[{datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S}Z] " + " | ".join(steps))
 
 
+def _reconnect(max_wait: int = 300) -> DB:
+    """Keep retrying with backoff instead of raising - a DNS/network blip on an unattended machine must
+    never kill the whole loop/watch process. Used after any tick/pass fails, including the DB itself."""
+    wait = 5
+    while True:
+        try:
+            return DB()
+        except Exception:
+            traceback.print_exc()
+            print(f"[reconnect] retrying in {wait}s ...", flush=True)
+            time.sleep(wait)
+            wait = min(wait * 2, max_wait)
+
+
 def watch(db: DB, every: int) -> None:
     """Near-real-time loop: sudden price, volume and book moves every pass; official news feeds every 90 s."""
     official = ["sec_press", "sec_statements", "fed_press", "fed_speeches", "cftc_press", "cftc_enforcement", "congress_api", "xrpl_rippled", "eth_foundation", "eth_geth"]
@@ -133,7 +147,7 @@ def watch(db: DB, every: int) -> None:
                     print(f"[{datetime.now(timezone.utc):%H:%M:%S}Z] AUTOPILOT {line}", flush=True)
         except Exception:
             traceback.print_exc()
-            db = DB()
+            db = _reconnect()
         time.sleep(every)
 
 
@@ -175,7 +189,7 @@ def main(argv=None) -> None:
                 tick(db)
             except Exception:
                 traceback.print_exc()
-                db = DB()
+                db = _reconnect()
             time.sleep(a.every)
     elif a.cmd == "research":
         for k, v in registry.run_due(db, a.source, a.force).items():
@@ -186,7 +200,7 @@ def main(argv=None) -> None:
                 registry.run_due(db)
             except Exception:
                 traceback.print_exc()
-                db = DB()
+                db = _reconnect()
             time.sleep(a.every)
     elif a.cmd == "learn":
         cfg = db.settings()
