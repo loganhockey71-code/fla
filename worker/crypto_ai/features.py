@@ -10,6 +10,9 @@ import pandas as pd
 from .config import BAR
 
 BARS_1H, BARS_4H, BARS_24H = 4, 16, 96
+BARS_3D, BARS_7D, BARS_30D = 288, 672, 2880
+LOOKBACK_BARS = BARS_30D + BARS_24H   # candles a live prediction needs so every feature is filled in
+COIN_ID = {"BTC": 0, "ETH": 1, "XRP": 2}  # lets one model trained on all three coins still tell them apart
 
 # What the LightGBM model is trained on. Only things that exist in the historical candle record,
 # so training and live prediction see exactly the same kind of inputs (no train/serve skew).
@@ -22,6 +25,10 @@ MODEL_FEATURES = [
     "dist_sma_20", "dist_sma_96", "sma_20_96",
     "btc_ret_1h", "btc_ret_24h",
     "corr_btc_24h", "corr_eth_24h", "corr_xrp_24h",
+    # Multi-day context for a 24-48h forecast (in a backtest on the same unseen year these raised AUC on both horizons).
+    "ret_3d", "ret_7d", "ret_30d", "volatility_7d", "vol_ratio_7d",
+    "dist_high_30d", "dist_low_30d", "vol_rel_7d", "btc_ret_7d",
+    "hour_utc", "day_of_week",   # crypto has session and weekend rhythms
 ]
 
 # Recorded at prediction time but NOT model inputs in v1: Coinbase offers no free historical
@@ -36,9 +43,15 @@ LABELS = {
     "dist_sma_20": "price vs 5h average", "dist_sma_96": "price vs 24h average", "sma_20_96": "5h vs 24h average",
     "btc_ret_1h": "BTC 1h move", "btc_ret_24h": "BTC 24h move",
     "corr_btc_24h": "correlation with BTC", "corr_eth_24h": "correlation with ETH", "corr_xrp_24h": "correlation with XRP",
+    "ret_3d": "3-day return", "ret_7d": "7-day return", "ret_30d": "30-day return",
+    "volatility_7d": "7-day volatility", "vol_ratio_7d": "24h/7-day volatility",
+    "dist_high_30d": "price vs 30-day high", "dist_low_30d": "price vs 30-day low",
+    "vol_rel_7d": "24h volume vs 7-day average", "btc_ret_7d": "BTC 7-day move", "coin_id": "which coin",
+    "hour_utc": "hour of day (UTC)", "day_of_week": "day of week (0 = Monday)",
 }
 PCT_FEATURES = {"ret_15m", "ret_1h", "ret_4h", "ret_24h", "btc_ret_1h", "btc_ret_24h", "dist_sma_20",
-                "dist_sma_96", "sma_20_96", "macd_hist", "macd_hist_1h", "volatility_4h", "volatility_24h"}
+                "dist_sma_96", "sma_20_96", "macd_hist", "macd_hist_1h", "volatility_4h", "volatility_24h",
+                "ret_3d", "ret_7d", "ret_30d", "volatility_7d", "dist_high_30d", "dist_low_30d", "btc_ret_7d"}
 
 
 def describe(name: str, value: float) -> str:
@@ -47,6 +60,12 @@ def describe(name: str, value: float) -> str:
         return f"{label} unavailable"
     if name in PCT_FEATURES:
         return f"{label} {value * 100:+.2f}%"
+    if name == "coin_id":
+        return f"coin is {next((s for s, i in COIN_ID.items() if i == value), '?')}"
+    if name == "day_of_week":
+        return f"day of week {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][int(value)]}"
+    if name == "hour_utc":
+        return f"{label} {int(value):02d}:00"
     return f"{label} {value:.2f}"
 
 
@@ -97,6 +116,16 @@ def compute_features(frames: dict[str, pd.DataFrame], symbol: str) -> pd.DataFra
     btc = frames["BTC"]["close"].reindex(idx)
     f["btc_ret_1h"] = btc.pct_change(BARS_1H)
     f["btc_ret_24h"] = btc.pct_change(BARS_24H)
+    f["btc_ret_7d"] = btc.pct_change(BARS_7D)
+
+    f["ret_3d"] = c.pct_change(BARS_3D)
+    f["ret_7d"] = c.pct_change(BARS_7D)
+    f["ret_30d"] = c.pct_change(BARS_30D)
+    f["volatility_7d"] = lr.rolling(BARS_7D).std()
+    f["vol_ratio_7d"] = f["volatility_24h"] / f["volatility_7d"]
+    f["dist_high_30d"] = c / c.rolling(BARS_30D).max() - 1
+    f["dist_low_30d"] = c / c.rolling(BARS_30D).min() - 1
+    f["vol_rel_7d"] = (v.rolling(BARS_24H).sum() / (v.rolling(BARS_7D).sum() / 7)).clip(upper=20)
 
     for other in ("BTC", "ETH", "XRP"):
         col = f"corr_{other.lower()}_24h"
@@ -106,9 +135,12 @@ def compute_features(frames: dict[str, pd.DataFrame], symbol: str) -> pd.DataFra
             olr = np.log(frames[other]["close"].reindex(idx)).diff()
             f[col] = lr.rolling(BARS_24H).corr(olr)
 
+    f["coin_id"] = float(COIN_ID[symbol])
     f = f.replace([np.inf, -np.inf], np.nan)
     f.index = idx + pd.Timedelta(seconds=BAR)  # asof = the moment the candle closed
     f.index.name = "asof"
+    f["hour_utc"] = f.index.hour.astype(float)
+    f["day_of_week"] = f.index.dayofweek.astype(float)
     f["close"] = c.values
     return f
 

@@ -9,7 +9,7 @@ import pandas as pd
 from . import coinbase
 from .db import JsonList
 from .config import BAR, HORIZONS, PRODUCTS, SYMBOLS
-from .features import compute_features
+from .features import LOOKBACK_BARS, compute_features
 from .model import predict_probability
 from .paper import act_on_prediction
 from .research import features as rfeat
@@ -49,7 +49,7 @@ def explain(signal: str, bull: float, horizon_h: int, drivers: list[dict], gate:
 
 
 def live_frames(now: datetime) -> dict[str, pd.DataFrame]:
-    start = now - timedelta(seconds=BAR * 620)
+    start = now - timedelta(seconds=BAR * (LOOKBACK_BARS + 100))   # ~31 days: enough for the 30-day features
     return {s: coinbase.closed_only(coinbase.candles(PRODUCTS[s], BAR, start, now), BAR, now) for s in SYMBOLS}
 
 

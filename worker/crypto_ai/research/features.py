@@ -99,9 +99,13 @@ def _event_row(ev: pd.DataFrame, pm: pd.DataFrame, symbol: str, t: pd.Timestamp)
                 row["ev_confirmations_24h"] = float(seen.loc[d24, "independent_confirmations"].mean())
     if len(pm):
         win = pm[(pm["captured_at"] <= t) & (pm["captured_at"] > t - pd.Timedelta(hours=24))]
-        win = win[win["coins"].apply(lambda c: symbol in c)]
+        # Guard against an empty `win`: filtering it with .apply() on an empty Series yields a non-bool
+        # dtype, which pandas can then mis-read as a column selector and silently drop every column
+        # (including "platform"/"market_id"), breaking the groupby below.
         moves, dirs = [], []
-        for _, g in win.groupby(["platform", "market_id"]):
+        if len(win):
+            win = win[win["coins"].apply(lambda c: symbol in c)]
+        for _, g in win.groupby(["platform", "market_id"]) if len(win) else []:
             if len(g) >= 2:
                 mv = float(g["yes_prob"].iloc[-1] - g["yes_prob"].iloc[0])
                 moves.append(abs(mv))

@@ -23,6 +23,8 @@ def load_frames(db, days: int = 400, topup: bool = False) -> dict[str, pd.DataFr
         if topup:
             start = (df.index[-1].to_pydatetime() if len(df) else now - timedelta(days=days)) - timedelta(hours=1)
             new = coinbase.closed_only(coinbase.candles(PRODUCTS[s], BAR, start, now), BAR, now)
+            if len(df) and df.index[0] > pd.Timestamp(now - timedelta(days=days - 2)):     # stored history is shorter than asked: backfill the start
+                new = pd.concat([coinbase.candles(PRODUCTS[s], BAR, now - timedelta(days=days), df.index[0].to_pydatetime()), new])
             if len(new):
                 db.bulk("insert into candles (symbol, granularity, ts, open, high, low, close, volume) values %s on conflict (symbol, granularity, ts) do nothing",
                         [(s, BAR, ts.to_pydatetime(), r.open, r.high, r.low, r.close, r.volume) for ts, r in new.iterrows()])
