@@ -8,6 +8,9 @@ the standing model read), and acts on each signal at most once, so a signal that
 Guard rails (each one is a test): 10% of the portfolio per buy (20% when high-confidence), never more than 40% of the
 portfolio in one coin, never more than the cash, a $5 minimum, no selling in the first 2 hours of a position on an ordinary
 (non-sudden) signal so fees can't eat it alive, and a switch (`autopilot_enabled`) that turns it off.
+
+`autopilot_trade_window_*` (Settings) optionally restricts NEW buys to a UTC hour window (default 00:00-17:00) -
+existing positions are always managed (SELL/REDUCE never gated) so risk always comes off on schedule even outside it.
 """
 import json
 from datetime import datetime, timedelta, timezone
@@ -20,6 +23,17 @@ MAX_COIN_SHARE = 0.40           # same cap as the "what should I do with the cas
 MIN_HOLD_H = 2.0                # ordinary (non-sudden) SELL/REDUCE ignored while the position is younger than this
 MANUAL_LOCK = 778899            # the same advisory lock the website takes, so the two can never double-spend
 SOURCE = "autopilot"
+
+
+def in_trade_window(now: datetime, cfg: dict) -> bool:
+    """Whether autopilot may open NEW positions right now. Existing positions are always managed (SELL/REDUCE never
+    gated) regardless of the window - this only throttles when new risk gets taken on, never risk coming off.
+    Hours are UTC; crypto has no real trading session, so this is just what you asked for, not a market-structure fact."""
+    if not cfg.get("autopilot_trade_window_enabled", True):
+        return True
+    start, end = cfg["autopilot_trade_window_start_h"], cfg["autopilot_trade_window_end_h"]
+    h = now.hour
+    return start <= h < end if start <= end else h >= start or h < end   # handles a window that wraps past midnight
 
 
 def _cents(x: float) -> float:
@@ -41,6 +55,8 @@ def decide(coins: dict, cash: float, total: float, cfg: dict, now: datetime) -> 
         held = c.get("held_value") or 0.0
         act = sig["action"]
         if act == "BUY":
+            if not in_trade_window(now, cfg):
+                continue                                                   # outside the trading window: analyze, don't open new risk
             bull = sig.get("bull")
             conf = max(bull, 1 - bull) if bull is not None else 0.5
             budget = min(position_budget(total, cash_left, conf, cfg), MAX_COIN_SHARE * total - held, cash_left)

@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta, timezone
 
 from crypto_ai import autopilot
+from crypto_ai.config import DEFAULT_SETTINGS
 
 NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -72,6 +73,38 @@ def test_nothing_to_sell_means_no_order():
 def test_ordinary_sell_ignored_on_a_fresh_position_but_sudden_sell_is_not():
     assert go({"BTC": coin(sig("SELL"), held=100.0, lot_age_h=0.5)}) == []
     assert len(go({"BTC": coin(sig("SELL", kind="price"), held=100.0, lot_age_h=0.5)})) == 1
+
+
+# ---------------------------------------------------------------- trading window
+def test_buy_blocked_outside_the_trading_window():
+    cfg = dict(DEFAULT_SETTINGS)
+    cfg["autopilot_trade_window_start_h"], cfg["autopilot_trade_window_end_h"] = 0, 17   # NOW is 12:00 UTC - inside
+    assert go({"BTC": coin(sig("BUY"))}, cfg=cfg)                                         # inside window: buys fine
+    cfg["autopilot_trade_window_start_h"], cfg["autopilot_trade_window_end_h"] = 18, 23   # NOW (12:00) now outside
+    assert go({"BTC": coin(sig("BUY"))}, cfg=cfg) == []
+
+
+def test_sell_and_reduce_are_never_blocked_by_the_trading_window():
+    cfg = dict(DEFAULT_SETTINGS)
+    cfg["autopilot_trade_window_start_h"], cfg["autopilot_trade_window_end_h"] = 18, 23   # NOW (12:00) outside
+    o = go({"BTC": coin(sig("SELL"), held=100.0, lot_age_h=5)}, cfg=cfg)
+    assert len(o) == 1 and o[0]["side"] == "sell"                                          # risk-off still allowed
+
+
+def test_trade_window_can_be_disabled():
+    cfg = dict(DEFAULT_SETTINGS)
+    cfg["autopilot_trade_window_enabled"] = False
+    cfg["autopilot_trade_window_start_h"], cfg["autopilot_trade_window_end_h"] = 18, 23   # would otherwise block NOW
+    assert go({"BTC": coin(sig("BUY"))}, cfg=cfg)
+
+
+def test_trade_window_handles_wrapping_past_midnight():
+    from crypto_ai.autopilot import in_trade_window
+    cfg = dict(DEFAULT_SETTINGS)
+    cfg["autopilot_trade_window_start_h"], cfg["autopilot_trade_window_end_h"] = 22, 4     # 22:00 -> 04:00
+    assert in_trade_window(NOW.replace(hour=23), cfg)
+    assert in_trade_window(NOW.replace(hour=1), cfg)
+    assert not in_trade_window(NOW.replace(hour=12), cfg)
 
 
 def test_no_signal_no_order():

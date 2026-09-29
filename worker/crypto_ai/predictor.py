@@ -8,7 +8,7 @@ import pandas as pd
 
 from . import coinbase
 from .db import JsonList
-from .config import BAR, HORIZONS, PRODUCTS, SYMBOLS
+from .config import BAR, HORIZONS, PRODUCTS, SHORT_HORIZON_H, SYMBOLS
 from .features import LOOKBACK_BARS, compute_features
 from .model import predict_probability
 from .paper import act_on_prediction
@@ -67,10 +67,16 @@ def micro_snapshot(symbol: str) -> dict:
 
 
 def due(db, symbol: str, horizon_h: int, cfg: dict) -> bool:
+    """The 1h horizon refreshes on its own, much shorter `short_prediction_interval_min` cadence (it feeds
+    autopilot's fast read); 24h/48h keep the original `prediction_interval_h` cadence."""
     r = db.one("select max(created_at) as t from predictions where symbol=%s and horizon_h=%s and variant='market'", [symbol, horizon_h])
     if not r or r["t"] is None:
         return True
-    return datetime.now(timezone.utc) - r["t"] >= timedelta(hours=cfg["prediction_interval_h"]) - timedelta(minutes=5)
+    if horizon_h == SHORT_HORIZON_H:
+        interval = timedelta(minutes=cfg["short_prediction_interval_min"]) - timedelta(minutes=1)
+    else:
+        interval = timedelta(hours=cfg["prediction_interval_h"]) - timedelta(minutes=5)
+    return datetime.now(timezone.utc) - r["t"] >= interval
 
 
 def run_predictions(db, cfg: dict, force: bool = False) -> list[dict]:
