@@ -22,7 +22,7 @@ worker/crypto_ai/     Python worker + ML            .github/workflows/  free sch
    python -m crypto_ai.cli tick       # first predictions + paper trades
    ```
 3. **Keep it running** — pick one:
-   - *GitHub Actions* (free, needs a PUBLIC repo): push this folder to a repo, add secrets `DATABASE_URL`, `FRED_API_KEY`, `CONGRESS_API_KEY`. `worker.yml` runs `tick` every 15 min. (A private repo only gets 2,000 free Actions min/month, ~2 min/run - that covers hourly, not 15-min. Make the repo public for unlimited free minutes, or widen the cron back out if it must stay private.)
+   - *GitHub Actions* (free, needs a PUBLIC repo): push this folder to a repo, add secrets `DATABASE_URL`, `FRED_API_KEY`, `CONGRESS_API_KEY`. `worker.yml` runs `tick` every 5 min. (A private repo only gets 2,000 free Actions min/month - that covers hourly, not 5-min. Make the repo public for unlimited free minutes, or widen the cron back out if it must stay private.)
    - *Your own machine* (near real-time): `python -m crypto_ai.cli loop --every 300`
 4. **Dashboard**: import the repo in Vercel, root directory `web`, env vars `DATABASE_URL` and `APP_PASSWORD` (not the research keys: the dashboard never uses them). The site refuses to serve without a password.
 
