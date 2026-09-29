@@ -227,7 +227,10 @@ def run_watch_cycle(db, cfg: dict, snaps: dict | None = None) -> list[dict]:
 
 
 def publish_standing(db, cfg: dict) -> int:
-    """After each prediction run, record the model's ordinary lean as the current 'scheduled' signal for each coin."""
+    """After each prediction run, record the model's ordinary lean as the current 'scheduled' signal for each coin.
+    Deliberately still the 24h model: a real backtest of the new SHORT_HORIZON_H (1h) model showed NO profitable
+    signal threshold (fee drag dominates at every level from 52% to 75%), so it is logged and scored like the
+    'research' variant - tracked, never traded - until it (or a better short-horizon model) actually earns it."""
     n = 0
     for s in SYMBOLS:
         p = db.one("select id, bullish_prob, price_at_prediction, created_at from predictions where symbol=%s and horizon_h=24 and variant='market' order by created_at desc limit 1", [s])

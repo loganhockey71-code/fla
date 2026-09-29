@@ -7,7 +7,8 @@ load_dotenv()
 SYMBOLS = ["BTC", "ETH", "XRP"]
 PRODUCTS = {"BTC": "BTC-USD", "ETH": "ETH-USD", "XRP": "XRP-USD"}
 COINGECKO_IDS = {"BTC": "bitcoin", "ETH": "ethereum", "XRP": "ripple"}
-HORIZONS = [24, 48]
+HORIZONS = [1, 24, 48]  # 1h added for a fast/short-term signal; 24/48h are the original, evaluated horizons
+SHORT_HORIZON_H = 1
 BAR = 900  # seconds; the model works on 15-minute candles
 TRAIN_DAYS = 1095  # ~3 years of free Coinbase history: more market regimes than one ~9-month stretch
 
@@ -23,6 +24,7 @@ DEFAULT_SETTINGS = {
     "signal_threshold_pct": 52.0,
     "prediction_interval_h": 6.0,
     "max_spread_pct_to_trade": 0.30,
+    "hold_band_pct_1h": 0.4,
     "hold_band_pct_24h": 1.5,
     "hold_band_pct_48h": 2.0,
     "trade_horizons": [24, 48],
@@ -33,6 +35,13 @@ DEFAULT_SETTINGS = {
     "autopilot_enabled": True,     # the AI trades the manual paper account while you are away (turn off in Settings)
     "retrain_min_days": 30, "retrain_min_new_scored": 100, "retrain_holdout_days": 14, "retrain_min_improvement": 0.002,
     "retrain_max_p_value": 0.10, "pattern_min_examples": 30, "news_trigger_importance": 60, "signal_cooldown_min": 30,
+    # Short-horizon (1h) signal: logged and scored like the 'research' variant - a real backtest showed no
+    # profitable threshold (fee drag dominates), so it does NOT drive trades yet. Kept running so there is a
+    # growing, honestly-scored track record to judge instead of guessing.
+    "short_prediction_interval_min": 15,          # how often a fresh 1h prediction is logged (tick runs every 5 min)
+    "autopilot_trade_window_enabled": True,       # gate NEW autopilot buys to a time window; existing positions still get managed 24/7
+    "autopilot_trade_window_start_h": 0,          # UTC hour. Adjust these two if you want your own local hours instead.
+    "autopilot_trade_window_end_h": 17,
 }
 
 

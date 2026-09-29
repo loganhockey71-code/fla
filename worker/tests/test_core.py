@@ -5,7 +5,7 @@ import pytest
 from crypto_ai import detector, evaluator, events, paper
 from crypto_ai.features import MODEL_FEATURES, compute_features, make_labels
 from crypto_ai.model import train_symbol
-from crypto_ai.predictor import decide_signal
+from crypto_ai.predictor import decide_signal, due
 from tests.conftest import synthetic_frames
 
 
@@ -105,6 +105,41 @@ def test_scoring_rules(cfg):
     assert r["high_confidence"] and not r["in_range"] and r["directional_correct"]
 
 
+def test_every_configured_horizon_has_a_hold_band_setting(cfg):
+    """Regression: adding a horizon to HORIZONS without a matching hold_band_pct_<h>h setting raises a KeyError
+    inside evaluate_due(), which the tick() step wrapper silently swallows - exactly the earlier '100h old' bug."""
+    from crypto_ai.config import HORIZONS
+    for h in HORIZONS:
+        evaluator.score_prediction(_pred("HOLD", h=h), 100.1, cfg)  # must not raise
+
+
+# ---------------------------------------------------------------- prediction cadence
+class _FakeDB:
+    def __init__(self, last):
+        self.last = last
+
+    def one(self, sql, params=None):
+        return {"t": self.last}
+
+
+def test_short_horizon_refreshes_far_more_often_than_24h_48h(cfg):
+    from crypto_ai.config import SHORT_HORIZON_H
+    now = pd.Timestamp.now(tz="UTC").to_pydatetime()
+    # 20 minutes since the last prediction: the 1h signal is due again (interval 15 min), 24h/48h are not.
+    db = _FakeDB(now - pd.Timedelta(minutes=20))
+    assert due(db, "BTC", SHORT_HORIZON_H, cfg) is True
+    assert due(db, "BTC", 24, cfg) is False
+    assert due(db, "BTC", 48, cfg) is False
+    # 7 hours since the last prediction: everything is overdue.
+    db = _FakeDB(now - pd.Timedelta(hours=7))
+    assert due(db, "BTC", SHORT_HORIZON_H, cfg) is True
+    assert due(db, "BTC", 24, cfg) is True
+
+
+def test_due_is_true_when_no_prediction_exists_yet(cfg):
+    assert due(_FakeDB(None), "BTC", 24, cfg) is True
+
+
 # ---------------------------------------------------------------- signals
 def test_hold_is_default_without_edge(cfg):
     assert decide_signal(0.515, 0.02, cfg)[0] == "HOLD"
@@ -167,12 +202,12 @@ def test_generic_lists_are_not_events():
 def test_training_pipeline_runs_and_does_not_invent_an_edge(cfg):
     fr = synthetic_frames(n=24000, seed=3)
     m = train_symbol("BTC", fr, cfg)
-    for h in ("24", "48"):
+    for h in ("1", "24", "48"):
         bt = m["backtest_metrics"][h]
         assert 0.4 < bt["auc"] < 0.6                       # random walk: AUC must hover near 0.5
         assert bt["share_p_above_threshold"] < 0.5
         assert m["calibration"][h]["a"] >= 0          # calibration can never flip the model
-    assert set(m["model_blob"]) == {"24", "48"}
+    assert set(m["model_blob"]) == {"1", "24", "48"}
     assert "coin_id" in m["feature_names"]
 
 
