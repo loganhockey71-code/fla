@@ -2,7 +2,7 @@
 places an order anywhere.
 
 Trigger -> investigate -> update the signal -> say what to do now:
-  * price:     a fast move (default >= 1% inside 5/15/30 minutes)
+  * price:     a fast move (default >= 0.35% inside 5/15/30 minutes)
   * volume:    a volume spike (>= 3x normal with a price move, or >= 6x on its own)
   * orderbook: an extreme buy/sell imbalance together with a price move
   * news:      a major official/high-importance research event affecting the coin
@@ -16,9 +16,11 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from . import coinbase
-from .config import PRODUCTS, SYMBOLS
+from .config import PRODUCTS, SHORT_HORIZON_H, SYMBOLS
 from .db import JsonList
 from .detector import diagnose, find_trigger, headline, pct_move
+
+STANDING_SIGNAL_LIFETIME_MIN = 30   # how long a "no sudden event" standing read stays current before autopilot stops seeing it
 
 SEVERITY = {"HOLD": 0, "BUY": 0, "REDUCE": 1, "SELL": 2}
 
@@ -139,7 +141,7 @@ def news_triggers(db, cfg: dict, now: datetime) -> dict[str, dict]:
 
 
 def _fresh_model_read(db, symbols: list[str], now: datetime) -> dict[str, float | None]:
-    """Model's probability RIGHT NOW (24h horizon, market model). Not stored as an official prediction."""
+    """Model's probability RIGHT NOW (short horizon, market model). Not stored as an official prediction."""
     from .features import compute_features
     from .model import predict_probability
     from .predictor import live_frames
@@ -154,7 +156,7 @@ def _fresh_model_read(db, symbols: list[str], now: datetime) -> dict[str, float 
             continue
         try:
             feats = compute_features(frames, s)
-            out[s] = predict_probability(m, 24, feats.iloc[-1])[0]
+            out[s] = predict_probability(m, SHORT_HORIZON_H, feats.iloc[-1])[0]
         except Exception:
             pass
     return out
@@ -228,23 +230,25 @@ def run_watch_cycle(db, cfg: dict, snaps: dict | None = None) -> list[dict]:
 
 def publish_standing(db, cfg: dict) -> int:
     """After each prediction run, record the model's ordinary lean as the current 'scheduled' signal for each coin.
-    Deliberately still the 24h model: a real backtest of the new SHORT_HORIZON_H (1h) model showed NO profitable
-    signal threshold (fee drag dominates at every level from 52% to 75%), so it is logged and scored like the
-    'research' variant - tracked, never traded - until it (or a better short-horizon model) actually earns it."""
+    Uses the short-horizon (SHORT_HORIZON_H) model, refreshed on its own fast `short_prediction_interval_min`
+    cadence, so this updates roughly every tick instead of a handful of times a day - trading it more often was
+    an explicit choice (more, faster trades) over the earlier finding that it wasn't profitable after fees; that
+    finding did not change, so track prediction_results/paper_trades to see the actual cost of this trade-off."""
+    lifetime = timedelta(minutes=STANDING_SIGNAL_LIFETIME_MIN)
     n = 0
     for s in SYMBOLS:
-        p = db.one("select id, bullish_prob, price_at_prediction, created_at from predictions where symbol=%s and horizon_h=24 and variant='market' order by created_at desc limit 1", [s])
+        p = db.one("select id, bullish_prob, price_at_prediction, created_at from predictions where symbol=%s and horizon_h=%s and variant='market' order by created_at desc limit 1", [s, SHORT_HORIZON_H])
         if not p:
             continue
-        already = db.one("select 1 x from live_signals where symbol=%s and trigger_kind='scheduled' and expires_at=%s", [s, p["created_at"] + timedelta(hours=7)])   # this prediction's signal
+        already = db.one("select 1 x from live_signals where symbol=%s and trigger_kind='scheduled' and expires_at=%s", [s, p["created_at"] + lifetime])   # this prediction's signal
         newer = db.one("select 1 x from live_signals where symbol=%s and created_at >= %s", [s, p["created_at"]])                                            # a sudden-event signal is fresher
         if already or newer:
             continue
         action = standing_action(p["bullish_prob"], cfg)
         prev = db.one("select action from live_signals where symbol=%s order by created_at desc limit 1", [s])
         db.insert("live_signals", {"symbol": s, "trigger_kind": "scheduled", "action": action, "urgency": "low", "price": p["price_at_prediction"], "model_bull_prob": p["bullish_prob"],
-                                   "score": (p["bullish_prob"] - 0.5) * 4, "reasons": JsonList([f"No sudden event. Model lean: {p['bullish_prob']:.0%} up over 24h"]),
-                                   "explanation": f"{action} {s}: no sudden event; ordinary model read is {p['bullish_prob']:.0%} up over 24h.", "previous_action": prev["action"] if prev else None,
-                                   "expires_at": p["created_at"] + timedelta(hours=7)})
+                                   "score": (p["bullish_prob"] - 0.5) * 4, "reasons": JsonList([f"No sudden event. Model lean: {p['bullish_prob']:.0%} up over {SHORT_HORIZON_H}h"]),
+                                   "explanation": f"{action} {s}: no sudden event; right-now model read is {p['bullish_prob']:.0%} up over {SHORT_HORIZON_H}h.", "previous_action": prev["action"] if prev else None,
+                                   "expires_at": p["created_at"] + lifetime})
         n += 1
     return n

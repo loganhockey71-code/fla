@@ -5,6 +5,7 @@ There is deliberately no exchange/broker order code anywhere in this project.
 """
 from datetime import datetime, timedelta, timezone
 
+from . import risk
 from .config import SYMBOLS
 
 
@@ -96,14 +97,24 @@ def act_on_prediction(db, pred: dict, snap: dict, prices: dict[str, float], cfg:
             return _skip(db, pred, f"a {h}h {sym} position is already open", now)
         if snap.get("spread_pct") and snap["spread_pct"] > cfg["max_spread_pct_to_trade"]:
             return _skip(db, pred, f"spread {snap['spread_pct']:.2f}% too wide", now)
-        plan = plan_buy(snap["price"], snap.get("spread_pct"),
-                        position_budget(st["total_value"], st["cash"], pred["confidence"], cfg), cfg)
+        atr = risk.atr_pct(risk.recent_candles(db, sym, cfg["atr_period_bars"] + 1), cfg["atr_period_bars"])
+        exits = risk.plan_exits(snap["price"], atr, cfg)
+        edge_ok, rr = risk.has_edge(snap["price"], exits["stop_price"], exits["take_profit_price"], cfg)
+        if not edge_ok:
+            why = f"reward:risk {rr:.2f} < {cfg['min_reward_risk_ratio']:.1f} after costs" if rr is not None else "stop distance is not positive"
+            return _skip(db, pred, f"{why} - no measurable edge", now)
+        base_budget = position_budget(st["total_value"], st["cash"], pred["confidence"], cfg)
+        budget = risk.risk_based_budget(st["total_value"], st["cash"], exits["stop_price"], snap["price"], base_budget, cfg)
+        plan = plan_buy(snap["price"], snap.get("spread_pct"), budget, cfg)
         if plan is None:
             return _skip(db, pred, "not enough cash (no leverage allowed)", now)
         after = st["total_value"] - plan["fee_entry"]
         db.insert("paper_trades", {"prediction_id": pred["id"], "symbol": sym, "horizon_h": h, "signal": "BUY",
                                    "status": "open", "opened_at": now, "planned_exit_at": now + timedelta(hours=h),
-                                   "balance_after_open": after, **plan})
+                                   "balance_after_open": after, **plan,
+                                   "initial_stop_price": exits["stop_price"], "stop_price": exits["stop_price"],
+                                   "take_profit_price": exits["take_profit_price"], "entry_atr_pct": exits["entry_atr_pct"],
+                                   "expected_rr": exits["expected_rr"], "high_water_price": plan["exec_price"]})
     else:  # SELL: spot only, so it can only close longs that already exist
         open_longs = [t for t in st["trades"] if t["status"] == "open" and t["symbol"] == sym]
         if not open_longs:
@@ -134,4 +145,27 @@ def close_due_positions(db, cfg: dict, prices: dict, spreads: dict, price_lookup
             continue
         close_trade(db, t, mid, spreads.get(t["symbol"]), cfg, prices, "horizon", t["planned_exit_at"])
         n += 1
+    return n
+
+
+def manage_open_positions(db, cfg: dict, prices: dict, spreads: dict) -> int:
+    """Every open AI-account position, every tick: track MFE/MAE, advance the trailing stop, and close early on
+    a stop-loss / take-profit / trailing-stop / momentum-reversal - on top of (not instead of) the horizon exit
+    and the next opposing signal. Skips positions with no stop_price (opened before risk.py existed, or entry
+    volatility wasn't known yet): they keep the old behaviour instead of a surprise momentum-reversal exit."""
+    n = 0
+    for t in db.all("select * from paper_trades where status='open' and account='ai' and stop_price is not null"):
+        price = prices.get(t["symbol"])
+        if price is None:
+            continue
+        bars = max(cfg["atr_period_bars"], cfg["momentum_reversal_lookback_bars"]) + 1
+        candles = risk.recent_candles(db, t["symbol"], bars)
+        atr = risk.atr_pct(candles, cfg["atr_period_bars"])
+        mfe, mae = risk.update_excursion(t["exec_price"], price, t.get("mfe_pct"), t.get("mae_pct"))
+        hit = risk.check_exit(t, price, candles["close"], atr, cfg)
+        db.update("paper_trades", t["id"], {"stop_price": hit["stop_price"], "high_water_price": hit["high_water_price"],
+                                            "trail_active": hit["trail_active"], "mfe_pct": mfe, "mae_pct": mae})
+        if hit["exit_reason"]:
+            close_trade(db, {**t, "stop_price": hit["stop_price"]}, price, spreads.get(t["symbol"]), cfg, prices, hit["exit_reason"], datetime.now(timezone.utc))
+            n += 1
     return n

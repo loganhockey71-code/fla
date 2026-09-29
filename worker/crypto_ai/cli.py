@@ -3,6 +3,7 @@
   train [--days N]   fetch history, train + backtest per-coin models, activate them
   tick               one full cycle: collect -> news -> detect -> evaluate -> predict -> paper trade -> metrics
   loop [--every S]   run `tick` forever (local, near-real-time)
+  optimize-exits     walk-forward search for the best stop-loss/take-profit ATR multiples (report only)
   status             show what is in the database
 """
 import argparse
@@ -14,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import autopilot, coinbase, coingecko, evaluator, metrics, paper, predictor, realtime
 from . import learning
+from .learning import exit_optimizer
 from .research import registry
 from .config import BAR, HORIZONS, PRODUCTS, SYMBOLS, TRAIN_DAYS
 from .db import DB, JsonList
@@ -105,10 +107,12 @@ def tick(db: DB) -> None:
     spreads = {s: v.get("spread_pct") for s, v in snaps.items()}
     if len(prices) == len(SYMBOLS):
         step("close_trades", lambda: paper.close_due_positions(db, cfg, prices, spreads, coinbase.price_at_safe))
+        step("risk_exits_ai", lambda: paper.manage_open_positions(db, cfg, prices, spreads))
     n_eval = step("evaluate", lambda: evaluator.evaluate_due(db, cfg))
     step("predict", lambda: len(predictor.run_predictions(db, cfg)))
     step("standing", lambda: realtime.publish_standing(db, cfg))
     if len(prices) == len(SYMBOLS):
+        step("risk_exits_manual", lambda: autopilot.manage_positions(db, cfg, snaps)["made"])
         step("autopilot", lambda: autopilot.run(db, cfg, snaps)["made"])
     if len(prices) == len(SYMBOLS):
         step("portfolio", lambda: round(paper.snapshot_portfolio(db, cfg, prices)["total_value"], 2))
@@ -151,6 +155,27 @@ def watch(db: DB, every: int) -> None:
         time.sleep(every)
 
 
+def cmd_optimize_exits(db: DB, folds: int) -> None:
+    cfg = db.settings()
+    for s in SYMBOLS:
+        print(f"[optimize-exits] {s}: walk-forward grid search ({folds} time-ordered folds) ...")
+        res = exit_optimizer.run_for_symbol(db, s, cfg, folds=folds)
+        if res.get("error"):
+            print(f"   skipped: {res['error']}")
+            continue
+        print(f"   tried {res['tried']} stop/target combos that meet the {cfg['min_reward_risk_ratio']:.1f}:1 reward:risk floor")
+        b = res["best"]
+        if not b:
+            print("   no combo had a usable result in every fold - not enough history yet")
+            continue
+        o = b["overall"]
+        print(f"   best (by worst-fold profit factor): stop={b['stop_loss_atr_mult']}x ATR, target={b['take_profit_atr_mult']}x ATR "
+              f"-> {o['n']} trades, net {o['net_pct_total']:+.1f}%, win rate {o['win_rate']:.0%}, "
+              f"profit factor {o['profit_factor']:.2f} (worst fold {b['worst_fold_profit_factor']:.2f}), max drawdown {o['max_drawdown_pct']:.1f}pp")
+        print("   current settings: stop_loss_atr_mult=%.2f take_profit_atr_mult=%.2f - this is a report, nothing was changed"
+              % (cfg["stop_loss_atr_mult"], cfg["take_profit_atr_mult"]))
+
+
 def cmd_status(db: DB) -> None:
     for t in ["market_data", "candles", "model_versions", "predictions", "prediction_results", "paper_trades",
               "portfolio", "news_items", "events", "live_signals", "post_mortems", "learned_patterns", "model_challenges", "research_events", "event_duplicates", "macro_data", "legislative_items", "prediction_market_snapshots"]:
@@ -175,6 +200,8 @@ def main(argv=None) -> None:
     lr.add_argument("--force-retrain", action="store_true", help="attempt a champion/challenger comparison now (still only promotes if the challenger wins on unseen data)")
     w = sub.add_parser("watch", help="real-time sudden-event watcher (price / volume / news), one pass every N seconds")
     w.add_argument("--every", type=int, default=60)
+    oe = sub.add_parser("optimize-exits", help="walk-forward search for the best stop-loss/take-profit ATR multiples (report only, changes nothing)")
+    oe.add_argument("--folds", type=int, default=4, help="time-ordered walk-forward folds")
     sub.add_parser("status")
     sub.add_parser("selfcheck", help="read-only end-to-end verification of the running system")
     a = ap.parse_args(argv)
@@ -207,6 +234,8 @@ def main(argv=None) -> None:
         print(learning.run_all(db, cfg, force_retrain=a.force_retrain, verbose=True))
     elif a.cmd == "watch":
         watch(db, a.every)
+    elif a.cmd == "optimize-exits":
+        cmd_optimize_exits(db, a.folds)
     elif a.cmd == "status":
         cmd_status(db)
     elif a.cmd == "selfcheck":
