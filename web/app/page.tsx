@@ -7,6 +7,7 @@ import { pendingPlan } from "@/lib/cashplan_db";
 import { ago, price, pctPts, signedUsd, tone, usd } from "@/lib/format";
 import { Empty, Pill, SetupError } from "@/components/Ui";
 import { Card, CoinIcon, Spark } from "@/components/Visuals";
+import { LiveCandles } from "@/components/LiveCandles";
 
 export const dynamic = "force-dynamic";
 const NAME: Record<string, string> = { BTC: "Bitcoin", ETH: "Ethereum", XRP: "XRP" };
@@ -46,6 +47,8 @@ export default async function Dashboard() {
           </div>
         ))}
       </section>
+
+      <LiveCandles />
 
       <div className="dash-grid">
         <Card title="AI Trading Signals" action={<Link href="/signals" className="more">View analysis →</Link>}>
