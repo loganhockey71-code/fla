@@ -78,6 +78,7 @@ def test_ordinary_sell_ignored_on_a_fresh_position_but_sudden_sell_is_not():
 # ---------------------------------------------------------------- trading window
 def test_buy_blocked_outside_the_trading_window():
     cfg = dict(DEFAULT_SETTINGS)
+    cfg["autopilot_trade_window_enabled"] = True                                         # off by default now; test the gate itself
     cfg["autopilot_trade_window_start_h"], cfg["autopilot_trade_window_end_h"] = 0, 17   # NOW is 12:00 UTC - inside
     assert go({"BTC": coin(sig("BUY"))}, cfg=cfg)                                         # inside window: buys fine
     cfg["autopilot_trade_window_start_h"], cfg["autopilot_trade_window_end_h"] = 18, 23   # NOW (12:00) now outside
@@ -101,6 +102,7 @@ def test_trade_window_can_be_disabled():
 def test_trade_window_handles_wrapping_past_midnight():
     from crypto_ai.autopilot import in_trade_window
     cfg = dict(DEFAULT_SETTINGS)
+    cfg["autopilot_trade_window_enabled"] = True                                          # off by default now; test the gate itself
     cfg["autopilot_trade_window_start_h"], cfg["autopilot_trade_window_end_h"] = 22, 4     # 22:00 -> 04:00
     assert in_trade_window(NOW.replace(hour=23), cfg)
     assert in_trade_window(NOW.replace(hour=1), cfg)

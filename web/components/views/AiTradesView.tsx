@@ -34,7 +34,9 @@ export default async function AiTradesView() {
       <h2>Every simulated trade</h2>
       {!trades.length ? <Empty>No trades yet. A trade happens only when a BUY (or a SELL closing an open long) is issued — HOLD never trades.</Empty> : (
         <div className="scroll"><table>
-          <thead><tr><th>Opened</th><th>Coin</th><th>Signal</th><th>Status</th><th className="num">Market px</th><th className="num">Fill px</th><th className="num">Invested</th><th className="num">Qty</th><th className="num">Fees</th><th className="num">Slip / spread</th><th className="num">Exit px</th><th className="num">P/L $</th><th className="num">P/L %</th><th className="num">Balance after</th></tr></thead>
+          <thead><tr><th>Opened</th><th>Coin</th><th>Signal</th><th>Status</th><th className="num">Market px</th><th className="num">Fill px</th><th className="num">Invested</th><th className="num">Qty</th><th className="num">Fees</th><th className="num">Slip / spread</th>
+            <th className="num">Stop</th><th className="num">Target</th><th className="num">R:R</th><th className="num">MFE</th><th className="num">MAE</th>
+            <th className="num">Exit px</th><th className="num">P/L $</th><th className="num">P/L %</th><th className="num">Balance after</th></tr></thead>
           <tbody>{trades.map((t) => (
             <tr key={t.id}>
               <td>{when(t.opened_at)}</td><td><b>{t.symbol}</b> <span className="muted">{t.horizon_h}h</span></td><td><Pill kind={t.signal}>{t.signal}</Pill></td>
@@ -43,6 +45,9 @@ export default async function AiTradesView() {
               <td className="num">{t.quantity != null ? Number(t.quantity).toPrecision(5) : "—"}</td>
               <td className="num">{t.fee_entry != null ? usd((t.fee_entry as number) + ((t.fee_exit as number) ?? 0)) : "—"}</td>
               <td className="num">{t.slippage_entry_pct != null ? `${t.slippage_entry_pct}% / ${(t.spread_entry_pct as number).toFixed(3)}%` : "—"}</td>
+              <td className="num muted">{price(t.stop_price)}</td><td className="num muted">{price(t.take_profit_price)}</td>
+              <td className="num muted">{t.expected_rr != null ? `${Number(t.expected_rr).toFixed(2)}:1` : "—"}</td>
+              <td className="num pos">{t.mfe_pct != null ? pctPts(t.mfe_pct) : "—"}</td><td className="num neg">{t.mae_pct != null ? pctPts(t.mae_pct) : "—"}</td>
               <td className="num">{price(t.exit_price)}</td>
               <td className={`num ${tone(t.pnl_usd)}`}>{t.pnl_usd != null ? signedUsd(t.pnl_usd) : "—"}</td>
               <td className={`num ${tone(t.pnl_pct)}`}>{t.pnl_pct != null ? pctPts(t.pnl_pct) : "—"}</td>

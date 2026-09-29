@@ -66,8 +66,13 @@ create table if not exists model_versions (
   backtest_metrics jsonb not null default '{}', -- walk-forward OUT-OF-SAMPLE results. BACKTEST, not live.
   is_active      boolean not null default false
 );
-create unique index if not exists model_versions_one_active
-  on model_versions (symbol) where is_active;
+-- No "one active model per symbol" index here on purpose: once schema_research.sql adds `variant`, a symbol
+-- legitimately has one active row per variant (market + research). schema_research.sql owns that index
+-- (model_versions_one_active_v, on (symbol, variant)) and creates it right after adding the column, so run
+-- that file next. (An earlier version of this file created a (symbol)-only index here; re-running schema.sql
+-- against a database that already has both variants active fails with "could not create unique index
+-- model_versions_one_active" - if you hit that, your database predates this fix and the fix is simply that
+-- this file no longer tries to create it.)
 
 -- ---------- predictions : IMMUTABLE ---------------------------------
 create table if not exists predictions (

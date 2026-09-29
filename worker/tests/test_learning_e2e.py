@@ -210,7 +210,8 @@ def test_major_official_news_triggers_a_signal_once(db, world, monkeypatch):
 
 def test_standing_signal_is_published_once_per_prediction(db, world):
     from crypto_ai import realtime
-    add_prediction(db, world, "ETH", len(world["frames"]["ETH"]) - 100, "BUY", 0.60, fresh=True)   # a brand-new 24h market prediction for ETH
+    from crypto_ai.config import SHORT_HORIZON_H
+    add_prediction(db, world, "ETH", len(world["frames"]["ETH"]) - 100, "BUY", 0.60, h=SHORT_HORIZON_H, fresh=True)   # a brand-new short-horizon market prediction for ETH
     n = realtime.publish_standing(db, world["cfg"])
     assert n >= 1
     assert realtime.publish_standing(db, world["cfg"]) == 0

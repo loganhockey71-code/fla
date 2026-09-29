@@ -11,7 +11,7 @@ worker/crypto_ai/     Python worker + ML            .github/workflows/  free sch
 
 ## Setup (~15 min, $0)
 
-1. **Supabase**: create a free project. SQL Editor → run `supabase/schema.sql`, then `supabase/schema_research.sql`, then `supabase/schema_manual.sql`, then `supabase/schema_learning.sql`, then `supabase/schema_cashplan.sql`. Copy the *Transaction pooler* connection string (Project Settings → Database).
+1. **Supabase**: create a free project. SQL Editor → run `supabase/schema.sql`, then `supabase/schema_research.sql`, then `supabase/schema_manual.sql`, then `supabase/schema_learning.sql`, then `supabase/schema_cashplan.sql`, then `supabase/schema_short_horizon.sql`, then `supabase/schema_risk.sql`. Copy the *Transaction pooler* connection string (Project Settings → Database).
 2. **Train the first models** (once, on your machine):
    ```bash
    cd worker
@@ -22,14 +22,14 @@ worker/crypto_ai/     Python worker + ML            .github/workflows/  free sch
    python -m crypto_ai.cli tick       # first predictions + paper trades
    ```
 3. **Keep it running** — pick one:
-   - *GitHub Actions* (free, needs a PUBLIC repo): push this folder to a repo, add secrets `DATABASE_URL`, `FRED_API_KEY`, `CONGRESS_API_KEY`. `worker.yml` runs `tick` every 15 min. (A private repo only gets 2,000 free Actions min/month, ~2 min/run - that covers hourly, not 15-min. Make the repo public for unlimited free minutes, or widen the cron back out if it must stay private.)
+   - *GitHub Actions* (free, needs a PUBLIC repo): push this folder to a repo, add secrets `DATABASE_URL`, `FRED_API_KEY`, `CONGRESS_API_KEY`. `worker.yml` runs `tick` every 5 min. (A private repo only gets 2,000 free Actions min/month - that covers hourly, not 5-min. Make the repo public for unlimited free minutes, or widen the cron back out if it must stay private.)
    - *Your own machine* (near real-time): `python -m crypto_ai.cli loop --every 300`
 4. **Dashboard**: import the repo in Vercel, root directory `web`, env vars `DATABASE_URL` and `APP_PASSWORD` (not the research keys: the dashboard never uses them). The site refuses to serve without a password.
 
 Local dashboard: `cd web && npm install && npm run dev` (needs `DATABASE_URL`).
 
 ## What one `tick` does
-collect price/spread/order book/flow → ingest news → detect sudden moves → close paper trades whose horizon ended → score predictions whose window ended → make new predictions if due (default every 6 h) → act on BUY/SELL → snapshot portfolio → recompute metrics.
+collect price/spread/order book/flow → ingest news → detect sudden moves → close paper trades whose horizon ended → score predictions whose window ended → make new predictions if due (1h horizon: about every tick; 24h/48h: default every 6 h) → act on BUY/SELL → snapshot portfolio → recompute metrics.
 
 ## The app: five pages
 **Dashboard** (BTC/ETH/XRP price cards with 24h change and chart, one AI signal table, news and market impact, your paper portfolio and recent trades) · **Signals** (live signals, prediction history, accuracy, learning) · **News** (research events, sudden moves, source health) · **Trades** (your manual trading, plus the AI's own test account) · **Settings** (settings and system health). Old links redirect.
@@ -40,10 +40,12 @@ Whenever you sell in the Trades page, the app immediately analyses the money tha
 ## Your move + AI autopilot (Trades page)
 **Your move** turns the AI signal into advice that fits what you hold: with none of a coin, HOLD becomes **WAIT** ("don't invest now, stay in cash"), BUY stays **BUY**, and SELL/REDUCE become **STAY OUT** (nothing to sell). If you hold it: HOLD / ADD / REDUCE / SELL.
 
-**Autopilot** lets the AI trade your manual paper account all the time, on its own — it runs on a timer (every worker `tick`, and instantly on a sudden event in `watch`) whether or not you're at your computer, not just while you're away. It follows the same current signal the dashboard shows and acts on each signal once: buys 10% of the account (20% if very confident), never more than 40% in one coin or more than your cash, sells all on SELL and half on REDUCE, and ignores an ordinary sell on a position younger than 2 h. Every autopilot trade is tagged and listed under **AI autopilot** with why, plus a "last checked" line that warns if the worker stopped, and win rate / average P&L per sale / profit locked in / open positions so you can judge whether it's actually working. Turn it off with the button there (`autopilot_enabled` setting). Still fake money and unproven signals: it is a test, not a strategy.
+**Autopilot** lets the AI trade your manual paper account all the time, on its own — it runs on a timer (every worker `tick`, and instantly on a sudden event in `watch`) whether or not you're at your computer, not just while you're away. It follows the same current signal the dashboard shows and acts on each signal once: buys 10% of the account (20% if very confident), never more than 40% in one coin or more than your cash, sells all on SELL and half on REDUCE, and ignores an ordinary sell on a position younger than 2 h. There is no UTC trading-window gate by default (`autopilot_trade_window_enabled: false`) — it can open new positions around the clock; turn that back on in Settings if you want it confined to certain hours. Every autopilot trade is tagged and listed under **AI autopilot** with why, plus a "last checked" line that warns if the worker stopped, and win rate / average P&L per sale / profit locked in / open positions so you can judge whether it's actually working. Turn it off with the button there (`autopilot_enabled` setting). Still fake money and unproven signals: it is a test, not a strategy.
 
 ## Real-time signals (the Signals tab, "What to do now" on the dashboard)
-The system watches BTC/ETH/XRP for a **fast price move** (default 1% inside 5/15/30 min), a **volume spike** (3x with a move, or 6x alone), an extreme **order-book imbalance**, and **major news** (official or importance 60+). On a trigger it investigates (did the other coins move? was there volume? is there news or a regulator announcement?), refreshes the model read, and publishes **BUY / HOLD / REDUCE / SELL** with every scoring term listed. REDUCE = sell about half, SELL = exit; falls count fully, rallies count half (don't chase). Severe negative official news (importance 85+) exits on its own. It is a rule-based overlay: it never edits the logged predictions and is **unproven** (each signal stores its price so outcomes can be measured). `python -m crypto_ai.cli watch` runs it about once a minute; the hourly GitHub job checks once per run.
+The system watches BTC/ETH/XRP for a **fast price move** (default 0.35% inside 5/15/30 min), a **volume spike** (3x with a move, or 6x alone), an extreme **order-book imbalance**, and **major news** (official or importance 60+). On a trigger it investigates (did the other coins move? was there volume? is there news or a regulator announcement?), refreshes the model read, and publishes **BUY / HOLD / REDUCE / SELL** with every scoring term listed. REDUCE = sell about half, SELL = exit; falls count fully, rallies count half (don't chase). Severe negative official news (importance 85+) exits on its own. It is a rule-based overlay: it never edits the logged predictions and is **unproven** (each signal stores its price so outcomes can be measured). `python -m crypto_ai.cli watch` runs it about once a minute; the hourly GitHub job checks once per run.
+
+**Trading is driven by the 1h read, not 24h/48h forecasts.** `trade_horizons` defaults to `[1]` and the model read this section (and the standing signal) uses is the short (1h) horizon, refreshed on its own fast `short_prediction_interval_min` cadence instead of every 6 h. That's a deliberate choice to trade far more often (closer to every tick than a handful of times a day) — an earlier backtest of that same 1h signal found no profitable threshold after fees, and that finding wasn't relitigated, only overridden. The 24h/48h models still run, are still logged and scored, and still back the champion/challenger retraining in `learn`; they just no longer place trades.
 
 ## Self-learning (the Learning tab)
 1. Every prediction is tracked and scored (predictions, results, metrics, health).
@@ -51,6 +53,27 @@ The system watches BTC/ETH/XRP for a **fast price move** (default 1% inside 5/15
 3. **Patterns** are statistics over many predictions, never single mistakes: a situation needs 30+ examples each side and a Fisher test corrected for multiple comparisons before it is `confirmed`. Patterns are suggestions for a human; nothing is applied automatically.
 4. **Retraining** is attempted only after 30 days AND 100 newly scored predictions, at most once per 14-day window. A challenger trains only on data before the window; champion and challenger are then scored on that same unseen window and the challenger replaces the champion only if it is better in log-loss on both horizons, wins a paired daily sign test, is not worse-calibrated, and beats a coin flip. Every attempt is recorded (`model_challenges`), promoted or not.
 `python -m crypto_ai.cli learn [--force-retrain]` runs it by hand; `tick` runs it automatically.
+
+## Risk management (see `worker/crypto_ai/risk.py`)
+Every BUY (both the AI's own account and autopilot's manual account) gets a stop-loss and take-profit sized off
+that coin's own recent volatility (ATR%, from real high/low/close candles), not a fixed percentage - a calm
+entry gets a tight stop, a volatile one gets a wide one. `has_edge()` then checks the planned trade actually
+clears round-trip fees + slippage with room to spare (`min_reward_risk_ratio`, default 1.5:1); if it doesn't,
+the trade is skipped outright (logged as *skipped* with the reason) rather than forced. Position size is capped
+so a full stop-out never risks more than `max_risk_pct_per_trade` (default 1%) of the account, on top of (never
+above) the existing confidence-based sizing.
+
+While a position is open, every tick checks it independently of the next signal: a **trailing stop** arms once
+price has moved `trailing_activation_r` x the original risk in profit, then follows the highest price seen by
+`trailing_atr_mult` x ATR - it only ever moves to reduce risk, never back the other way. A **momentum-reversal**
+check exits early if the last few bars move sharply against the position, instead of waiting for the (much
+wider) stop. Entry/exit price, stop, target, expected reward:risk, max favourable/adverse excursion (MFE/MAE),
+fees, slippage and exit reason are recorded on every trade (`paper_trades`) and shown on the Paper trades page.
+
+`python -m crypto_ai.cli optimize-exits` backtests a grid of stop/target ATR multiples against real historical
+candles and the model's actual past BUY calls, using time-ordered walk-forward folds (never a random split) and
+ranking each combo by its **worst** fold's profit factor - not net P&L alone - so a combo that only worked in
+one period doesn't win. It only prints a report; nothing is applied automatically, the same as `learned_patterns`.
 
 ## Manual paper trading (Trades > My trading)
 Buy and sell BTC/ETH/XRP any time with fake money, all on one page. **Buy** with a dollar amount (quick $25/$50/$100/Max). **Sell** 25% / 50% / 75% / all, or a dollar amount, from each coin card or the **Your holdings** table, or press **Sell everything** (asks to confirm). Same live price, real spread, 0.4% fee and 0.1% slippage as the AI, no leverage, spot only. It is a **separate account** (its own $1,000) so your trades never change the AI's results. **Profit & loss** shows profit locked in from sales (kept when you rebuy), profit on what you still hold, an average cost that restarts on each new purchase, and a running total per sale. Every trade stores what the AI was saying at that moment. Manual positions never close automatically; you sell them.
@@ -86,7 +109,7 @@ Sources and trust tier (1 = most trusted) - polled on their own schedule by `pyt
 | Free-source hierarchy | SEC/Fed/CFTC/Congress = `official`, project blogs = `project`, crypto RSS = `media` (importance capped at 65). No social/rumor feeds are ingested |
 
 ## Design decisions you may want to change
-- **Spot, long-only.** BUY opens a long that exits at the horizon; SELL can only close an existing long (otherwise logged as *skipped*). Shorting would need leverage/margin, which is excluded.
+- **Spot, long-only.** BUY opens a long that exits at the horizon, an opposing SELL signal, or a risk-management exit (see below), whichever comes first; SELL can only close an existing long (otherwise logged as *skipped*). Shorting would need leverage/margin, which is excluded.
 - **Position limits**: 10% of portfolio (20% if confidence ≥ 75%), capped by cash. One open position per coin per horizon.
 - **Signal threshold 52%** (Settings). Calibrated probabilities from crypto models sit near 50%; at 55% the current models almost never trade, which would leave nothing to test.
 - **What the model learns from** (chosen by testing every change on the same unseen year of real data, Sept 2025 - Sept 2026):
@@ -108,6 +131,7 @@ python -m crypto_ai.cli research [--force] [--source fred_api]   # poll due rese
 python -m crypto_ai.cli research-loop      # forever, each source at its own interval
 python -m crypto_ai.cli watch [--every 60]  # near-real-time sudden-event watcher
 python -m crypto_ai.cli learn [--force-retrain]  # post-mortems, patterns, guarded retrain check
+python -m crypto_ai.cli optimize-exits [--folds 4]  # walk-forward stop-loss/take-profit report (see Risk management below); changes nothing
 python -m crypto_ai.cli selfcheck         # read-only end-to-end check of the running system (also see the /health page)
-cd worker && python -m pytest              # 70 tests; set TEST_DATABASE_URL to a FRESH SCRATCH Postgres to also run the dedupe + full paper-trading e2e tests
+cd worker && python -m pytest              # 127 tests; set TEST_DATABASE_URL to a FRESH SCRATCH Postgres to also run the dedupe + full paper-trading e2e tests
 ```
