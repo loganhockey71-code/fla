@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from . import autopilot, coinbase, coingecko, evaluator, metrics, paper, predictor, realtime
 from . import learning
 from .research import registry
-from .config import BAR, PRODUCTS, SYMBOLS, TRAIN_DAYS
+from .config import BAR, HORIZONS, PRODUCTS, SYMBOLS, TRAIN_DAYS
 from .db import DB, JsonList
 from .model import train_symbol
 
@@ -77,7 +77,7 @@ def cmd_train(db: DB, days: int, only: str | None = None) -> None:
             m = train_symbol(s, frames, cfg, variant, rdata)
             db.run("update model_versions set is_active=false where symbol=%s and variant=%s and is_active", [s, variant])
             db.insert("model_versions", {**m, "feature_names": JsonList(m["feature_names"]), "is_active": True})
-            for h in ("24", "48"):
+            for h in [str(h) for h in HORIZONS]:
                 bt = m["backtest_metrics"][h]
                 print(f"   {h}h  OOS n={bt['oos_samples']}  dir.acc={bt['directional_accuracy']:.1%} "
                       f"(always-up {bt['always_up_accuracy']:.1%})  AUC={bt['auc']:.3f}  "
