@@ -151,7 +151,7 @@ def poll(db, src: dict) -> dict:
     first = src["last_success_at"] is None
     since = (src["last_success_at"] or now - timedelta(days=30)) - timedelta(hours=1)
     frm = since.strftime("%Y-%m-%dT%H:%M:%SZ")
-    new = changed = 0
+    new = 0
 
     # 1. recently updated bills -> crypto-relevant ones (plus anything we already track)
     tracked = {r["external_id"] for r in db.all("select external_id from legislative_items where item_type='bill'")}
@@ -202,7 +202,7 @@ def poll(db, src: dict) -> dict:
                [ext, h["congress"], title[:600], h["chamber"], (d.get("dates") or [{}])[0].get("date"), hashlib.sha1(title.encode()).hexdigest(), rel,
                 json.dumps([c.get("name") for c in d.get("committees", [])]), f"https://www.congress.gov/event/hearing/{h['jacketNumber']}"])
         if rel:
-            hi = {"external_id": ext, "title": title, "url": f"https://www.congress.gov/", "crypto_relevance": rel, "bill_type": "hearing",
+            hi = {"external_id": ext, "title": title, "url": "https://www.congress.gov/", "crypto_relevance": rel, "bill_type": "hearing",
                   "number": str(h["jacketNumber"]), "latest_action_text": "Congressional hearing", "state_hash": ext}
             ev = {"category": "legislation", "coins": ["BTC", "ETH", "XRP"], "named": [], "sentiment": "neutral", "importance": 52 if rel >= 90 else 40,
                   "event_probability": 1.0, "event_probability_source": "published_fact"}

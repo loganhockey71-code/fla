@@ -9,3 +9,4 @@ node_modules/
 worker/logs/
 .claude/settings.local.json
 web/tsconfig.tsbuildinfo
+.cache/

@@ -19,7 +19,7 @@ from scipy.stats import binomtest
 from sklearn.metrics import brier_score_loss, roc_auc_score
 
 from ..config import BAR, HORIZONS, SYMBOLS, TRAIN_DAYS
-from ..features import MODEL_FEATURES, compute_features, make_labels
+from ..features import compute_features, make_labels
 from ..model import predict_frame, simulate, train_symbol
 
 LN2 = math.log(2)
@@ -113,7 +113,7 @@ def challenge(db, cfg: dict, symbol: str, variant: str, frames: dict, rdata: dic
         chal = train_symbol(symbol, train_frames, cfg, variant, rdata)
         feats = compute_features(frames, symbol)
         if variant == "research":
-            from ..research.features import RESEARCH_FEATURES, research_frame
+            from ..research.features import research_frame
             feats = feats.join(research_frame(rdata, symbol, feats.index))
         res = compare(champ, chal, feats, champ["feature_names"], chal["feature_names"], hold_start, pd.Timestamp(now), cfg)
     db.insert("model_challenges", {"symbol": symbol, "variant": variant, "champion_version": champ["version"], "challenger_version": chal["version"] if chal else None,

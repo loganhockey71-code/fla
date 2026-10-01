@@ -2,7 +2,7 @@
 
     python worker/tests/run_scratch_tests.py
 
-Needs `pip install pgserver` (a self-contained Postgres). Builds a temporary database from all four schema files,
+Needs `pip install pgserver` (a self-contained Postgres). Builds a temporary database from every schema file,
 runs the Node manual-trading tests and the Python end-to-end tests (fresh database for each), then deletes everything.
 """
 import os
@@ -14,7 +14,8 @@ from pathlib import Path
 import pgserver
 
 ROOT = Path(__file__).resolve().parents[2]
-SCHEMAS = ("schema.sql", "schema_research.sql", "schema_manual.sql", "schema_learning.sql", "schema_cashplan.sql")
+SCHEMAS = ("schema.sql", "schema_research.sql", "schema_manual.sql", "schema_learning.sql", "schema_cashplan.sql", "schema_short_horizon.sql", "schema_risk.sql",
+           "schema_scalp.sql", "schema_datalake.sql", "schema_microstructure.sql")
 
 
 def fresh_db():
@@ -23,7 +24,8 @@ def fresh_db():
     if uri.startswith("postgres://"):
         uri = "postgresql://" + uri[len("postgres://"):]
     for f in SCHEMAS:
-        srv.psql((ROOT / "supabase" / f).read_text(encoding="utf-8").replace("create extension if not exists pgcrypto;", ""))
+        if (ROOT / "supabase" / f).exists():
+            srv.psql((ROOT / "supabase" / f).read_text(encoding="utf-8").replace("create extension if not exists pgcrypto;", ""))
     return srv, uri + ("&" if "?" in uri else "?") + "sslmode=disable"
 
 
@@ -40,7 +42,7 @@ if __name__ == "__main__":
         srv, url = fresh_db()
         print(f"== {name} (Node) ==")
         rc |= run(["node", "--test", name], ROOT / "web", url)
-    for name in ("tests/test_e2e.py", "tests/test_learning_e2e.py", "tests/test_research.py"):
+    for name in ("tests/test_e2e.py", "tests/test_learning_e2e.py", "tests/test_research.py", "tests/test_scalp_live.py", "tests/test_scalp_confirm_live.py"):
         srv, url = fresh_db()
         print(f"== {name} ==")
         rc |= run([sys.executable, "-W", "ignore", "-m", "pytest", "-q", "-x", name], ROOT / "worker", url)

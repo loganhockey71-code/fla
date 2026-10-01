@@ -3,6 +3,7 @@ import type postgres from "postgres";
 import { COINS, cashOf } from "./manual";
 import type { Coin } from "./manual";
 import type { Action, CoinView } from "./cashplan";
+import { PRED_FRESH_H, leanOf, readIsFresh, type Read } from "./scalp.ts";
 
 export type CoinSnap = {
   coin: Coin; price: number | null; change24h: number | null; spark: number[];
@@ -13,7 +14,7 @@ export type CoinSnap = {
 const short = (s: string, n = 90) => (s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s);
 
 export async function coinSnapshots(sql: postgres.Sql): Promise<CoinSnap[]> {
-  const [prices, candles, sigs, preds, news] = await Promise.all([
+  const [prices, candles, sigs, preds, news, scalpStatus] = await Promise.all([
     sql`select distinct on (symbol) symbol, price, ts from market_data order by symbol, ts desc`,
     sql`select symbol, ts, close from candles where granularity = 900 and ts > now() - interval '25 hours' order by symbol, ts`,
     sql`select distinct on (symbol) * from live_signals order by symbol, created_at desc`,
@@ -21,7 +22,9 @@ export async function coinSnapshots(sql: postgres.Sql): Promise<CoinSnap[]> {
     sql`select title, origin_tier, btc_impact_score, eth_impact_score, xrp_impact_score, affected_coins from research_events
         where kind in ('news','legislation','macro') and detected_at > now() - interval '6 hours'
           and (kind <> 'news' or coalesce(published_at, detected_at) > now() - interval '6 hours') order by importance_score desc limit 30`,
+    sql`select value from scalp_state where key = 'status'`.catch(() => []),
   ]);
+  const reads = ((scalpStatus[0]?.value as { reads?: Record<string, Read> } | undefined)?.reads ?? {}) as Record<string, Read>;
   const col = { BTC: "btc_impact_score", ETH: "eth_impact_score", XRP: "xrp_impact_score" } as const;
   return COINS.map((coin) => {
     const price = (prices.find((r) => r.symbol === coin)?.price as number) ?? null;
@@ -32,11 +35,22 @@ export async function coinSnapshots(sql: postgres.Sql): Promise<CoinSnap[]> {
     const pred = preds.find((r) => r.symbol === coin);
     const suddenLive = !!sig && sig.trigger_kind !== "scheduled" && new Date(sig.expires_at as Date).getTime() > Date.now();
     let action: Action = "HOLD", bull: number | null = null, reason = "No prediction yet", asOf: Date | null = null;
-    if (pred) {
+    // The 24h model was retired when the scalper took over, so its newest row only gets older. A read more than PRED_FRESH_H old is NOT "what the AI says now".
+    const predFresh = !!pred && (Date.now() - new Date(pred.created_at as Date).getTime()) / 3_600_000 <= PRED_FRESH_H;
+    if (pred && !predFresh) reason = "No current 24h read (that model is retired; the Trades > Scalper tab has the live read)";
+    if (pred && predFresh) {
       action = pred.signal as Action; bull = pred.bullish_prob as number; asOf = pred.created_at as Date;
       const first0 = ((pred.reasons as string[]) ?? [])[0]?.replace(/\s*\((bullish|bearish)\)\s*$/, "");
       reason = action === "HOLD" ? `No clear edge (${Math.round(bull * 100)}% up / ${Math.round((1 - bull) * 100)}% down)`
         : `${action === "BUY" ? "Leans up" : "Leans down"}${first0 ? `: ${first0}` : ""}`;
+    }
+    const read = reads[coin];
+    if (!predFresh && read && readIsFresh(read.at)) {                        // the scalper's own live read stands in for the retired 24h model
+      const l = leanOf(read);
+      asOf = new Date(read.at);
+      if (l.lean === "long") { action = "BUY"; reason = `Scalper leans long: ${l.text}`; }
+      else if (l.lean === "short") { action = "REDUCE"; reason = `Scalper leans short: ${l.text}`; }
+      else reason = `Scalper: ${l.text}`;
     }
     if (suddenLive) {                                                       // a live shock overrides the regular read
       action = sig!.action as Action; asOf = sig!.created_at as Date;

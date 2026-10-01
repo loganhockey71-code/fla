@@ -1,11 +1,19 @@
 name: worker-tick
-# Collects prices, reads news, detects sudden moves, scores old predictions, makes new ones, updates the fake account.
-# FREE-MINUTES BUDGET: every 5 min is ~288 runs/day at ~2 min/run (~17,300 min/month) - well over the 2,000 free
-# minutes/month a PRIVATE repo gets. This cadence needs the repo to be PUBLIC (unlimited free Actions minutes):
-# Settings -> General -> Danger Zone -> Change visibility. If you ever make it private again, widen this back out
-# (e.g. "7 * * * *" for hourly, ~1,500 min/month) or Actions will start failing once the free minutes run out.
-# 5 minutes is also roughly the shortest interval GitHub's scheduler reliably honors - trading "every minute"
-# needs the worker running on your own machine instead (`python -m crypto_ai.cli loop --every 60`).
+# Collects prices, reads news, then runs the short-term scalper: manages open paper trades candle by candle and opens new ones.
+#
+# WHY THIS IS NOT JUST "*/5 * * * *" ANY MORE: GitHub's scheduler is best-effort. Scheduled runs are routinely delayed by
+# several minutes and some are dropped entirely, so a job that only runs "every 5 minutes" often ran every 10-15. Three things
+# now keep the scalper correct regardless:
+#   1. every run replays ALL 1-minute candles since each open trade last saw one (intrabar high/low), so a late or dropped
+#      run cannot miss a stop or a target that was touched in between - it just reacts late, at the live price;
+#   2. after the tick, `--burst 240` keeps making a scalper pass every 20 s for ~4 minutes, so a run that does start gives
+#      near-continuous coverage instead of one look every five minutes;
+#   3. the worker writes a heartbeat (scalp_state.heartbeat) and the dashboard shows its age, so a stalled scheduler is visible.
+# GitHub still cannot promise any cadence: for a guaranteed one run the worker yourself (`python -m crypto_ai.cli scalp`).
+#
+# FREE-MINUTES BUDGET: ~4.5 min of work per run every 5 min is ~1,300 Actions min/day. That needs the repo to be PUBLIC
+# (unlimited free minutes). A private repo gets 2,000 min/MONTH - use your own machine instead (`cli scalp`), or set
+# `--burst 0` and a much slower cron.
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -22,9 +30,11 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12", cache: pip, cache-dependency-path: worker/requirements.txt }
       - run: pip install -r worker/requirements.txt
-      - run: python -m crypto_ai.cli tick
+      - run: python -m crypto_ai.cli tick --burst 240 --every 20
         working-directory: worker
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
+          LOCAL_TZ: ${{ vars.LOCAL_TZ }}   # your IANA zone, e.g. America/New_York: the 05:00-23:59 learning window is local time
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}   # optional - AI analysis layer, $0 models only, analysis only (see README)

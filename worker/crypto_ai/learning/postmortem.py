@@ -7,7 +7,6 @@ retrain.py after a held-out comparison.
 """
 import json
 import math
-from datetime import timedelta
 
 import numpy as np
 import pandas as pd

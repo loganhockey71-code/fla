@@ -201,10 +201,14 @@ def _fold_duplicate(db, src, item, canon, sim, cls) -> str:
                                        "url": cur["source_url"], "title": cur["title"], "published_at": cur["published_at"],
                                        "similarity": 1.0, "counts_as_independent": False},
                   on_conflict="on conflict (event_id, url) do nothing")
-        imp = impacts(cur["event_category"], cur["sentiment"], min(cur["importance_score"] + 10, CRED_CAP[tier]), cur["affected_coins"], [])
+        new_imp = min(cur["importance_score"] + 10, CRED_CAP[tier])
+        ratio = new_imp / cur["importance_score"] if cur["importance_score"] else 1.0
+        # every coin's impact score is proportional to importance (see impacts()), so raising the importance must raise them too: the scalper's
+        # news layer reads these scores. (They used to stay at the media-copy values while only the importance was updated.)
+        scaled = {c: int(max(-100, min(100, round(cur[c] * ratio)))) for c in ("btc_impact_score", "eth_impact_score", "xrp_impact_score")}
         fields.update({"source": src["name"], "source_key": src["key"], "source_url": item.get("url"),
                        "external_id": item["external_id"], "origin_tier": tier, "source_credibility_score": src["credibility_score"],
-                       "importance_score": min(cur["importance_score"] + 10, CRED_CAP[tier]),
+                       "importance_score": new_imp, **scaled,
                        "event_probability": 1.0 if tier <= 2 else cur["event_probability"],
                        "event_probability_source": "published_fact" if tier <= 2 else cur["event_probability_source"]})
     fields["confidence_score"] = confidence(fields.get("source_credibility_score", cur["source_credibility_score"]), cur["sentiment"], n_conf)

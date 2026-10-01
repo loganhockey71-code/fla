@@ -1,4 +1,4 @@
-# Runs one full cycle of the paper-trading worker (collect, research, detect, evaluate, predict, paper-trade).
+# Runs one cycle of the paper-trading worker (collect prices, poll news, one scalper pass + grading + learning). For a continuous scalper use run_scalp.ps1.
 # Scheduled by the "CryptoAI-Tick" task. Output goes to worker\logs\tick.log with connection strings masked.
 $ErrorActionPreference = "Continue"
 Set-Location $PSScriptRoot

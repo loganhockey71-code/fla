@@ -1,4 +1,5 @@
 import { sql, getSettings } from "./db";
+import { heartbeatTone } from "./scalp";
 
 export type Check = { name: string; status: "ok" | "error" | "waiting" | "unused"; detail: string };
 const MIN = 60_000;
@@ -38,7 +39,7 @@ export async function runChecks(): Promise<Check[]> {
   else if (stalest > 15) push("Coinbase", "error", `API is up (${cb.ms} ms) but stored prices are ${Number.isFinite(stalest) ? fmt(stalest) + " old" : "missing"}: the worker is not collecting`);
   else push("Coinbase", "ok", `live API ${cb.ms} ms; BTC/ETH/XRP prices stored ${fmt(stalest)} ago`);
   push("Binance", "unused", `${bn.ok ? "reachable" : `HTTP ${bn.status}`}. The app does not use Binance (api.binance.com blocks US IPs); Coinbase + CoinGecko are the sources, so this has no effect`);
-  if (!db) return [...out, ...["FRED", "Congress.gov", "Research feeds", "Prediction engine", "Paper trading", "Evaluation engine"].map((n) => ({ name: n, status: "error" as const, detail: "needs Supabase" }))];
+  if (!db) return [...out, ...["FRED", "Congress.gov", "Research feeds", "Scalper worker", "Paper trading", "Prediction grading"].map((n) => ({ name: n, status: "error" as const, detail: "needs Supabase" }))];
 
   const cfg = await getSettings();
   const src = await db`select * from source_registry order by tier, key`;
@@ -54,64 +55,77 @@ export async function runChecks(): Promise<Check[]> {
   srcCheck("congress_api", "Congress.gov");
 
   const feeds = src.filter((s) => !["fred_api", "congress_api"].includes(s.key as string));
-  const bad = feeds.filter((s) => !s.last_polled_at || s.last_status === "error" || ageMin(s.last_success_at as Date) > Math.max((3 * (s.poll_interval_s as number)) / 60, 30));
-  if (bad.length) push("Research feeds", "error", `${bad.length}/${feeds.length} failing: ${bad.map((s) => `${s.key}${s.last_error ? ` (${s.last_error})` : ""}`).join("; ")}`);
+  const neverPolled = feeds.filter((s) => !s.last_polled_at);
+  const bad = feeds.filter((s) => !!s.last_polled_at && (s.last_status === "error" || ageMin(s.last_success_at as Date) > Math.max((3 * (s.poll_interval_s as number)) / 60, 30)));
+  if (neverPolled.length === feeds.length) push("Research feeds", "waiting", "no news source has been polled yet: start the worker (`python -m crypto_ai.cli tick`) and they fill in");
+  else if (bad.length || neverPolled.length) push("Research feeds", "error", `${bad.length + neverPolled.length}/${feeds.length} failing or never polled: ${[...bad, ...neverPolled].map((s) => `${s.key}${s.last_error ? ` (${s.last_error})` : ""}`).join("; ")}`);
   else {
     const [ev] = await db`select count(*)::int n, count(*) filter (where detected_at > now() - interval '24 hours')::int d from research_events`;
     push("Research feeds", "ok", `all ${feeds.length} sources (SEC, Fed, CFTC, XRPL, Ethereum, news, Polymarket, Kalshi) polled on schedule; ${ev.n} events saved (${ev.d} in the last 24 h). No Ripple corporate feed exists.`);
   }
 
-  // ---- prediction engine
-  const [run] = await db`select run_id, max(created_at) t, count(*)::int n, count(distinct (symbol, horizon_h, variant))::int combos from predictions where run_id is not null group by run_id order by t desc limit 1`;
-  const [models] = await db`select count(*)::int n from model_versions where is_active`;
-  if (!run) push("Prediction engine", "waiting", "no predictions yet: run `train` then `tick`");
-  else {
-    const a = ageMin(run.t as Date), limit = cfg.prediction_interval_h * 60 + 45;
-    if (run.combos < 12) push("Prediction engine", "error", `latest run only produced ${run.combos}/12 coin x horizon x variant predictions`);
-    else if (a > limit) push("Prediction engine", "error", `latest run ${fmt(a)} ago (should be every ${cfg.prediction_interval_h} h)`);
-    else push("Prediction engine", "ok", `12/12 predictions (BTC/ETH/XRP x 24h/48h x 2 models) ${fmt(a)} ago; ${models.n} active models`);
-  }
+  // ---- the scalper (the only thing that trades)
+  const states = await db`select key, value, updated_at from scalp_state`.catch(() => []);
+  const st = (k: string) => states.find((r) => r.key === k)?.value as Record<string, unknown> | undefined;
+  const beat = heartbeatTone((st("heartbeat") as { at?: string } | undefined)?.at);
+  const status = st("status") as { note?: string; fresh_data?: boolean; error?: string | null; enabled?: boolean } | undefined;
+  push("Scalper worker", beat.tone, beat.tone === "ok" ? `${beat.text}${status?.note ? `: ${status.note}` : ""}` : beat.text);
+  if (status?.error) push("Scalper entry side", "error", `the last pass could not look for new trades (${status.error}); open trades are still managed`);
 
-  // ---- paper trading
-  const trades = await db`select * from paper_trades where account = 'ai'`;
-  const [snap] = await db`select ts, cash, positions_value, total_value from portfolio order by ts desc limit 1`;
-  if (!snap) push("Paper trading", "waiting", "no portfolio snapshot yet");
-  else {
-    let cash = cfg.starting_balance;
-    for (const t of trades) {
-      if (t.status === "open" || t.status === "closed") cash -= (t.amount_invested as number) + (t.fee_entry as number);
-      if (t.status === "closed") cash += (t.quantity as number) * (t.exit_price as number) - (t.fee_exit as number);
-    }
-    const overdue = trades.filter((t) => t.status === "open" && ageMin(t.planned_exit_at as Date) > 15).length;
-    const open = trades.filter((t) => t.status === "open").length, closed = trades.filter((t) => t.status === "closed").length;
-    const sumOk = Math.abs((snap.cash as number) + (snap.positions_value as number) - (snap.total_value as number)) < 0.01;
-    const cashOk = Math.abs(cash - (snap.cash as number)) < 0.5 || ageMin(snap.ts as Date) > 6;
-    if (ageMin(snap.ts as Date) > 20) push("Paper trading", "error", `portfolio last updated ${fmt(ageMin(snap.ts as Date))} ago: the worker is not running`);
-    else if (!sumOk || !cashOk) push("Paper trading", "error", `books do not balance: cash ${(snap.cash as number).toFixed(2)} vs ${cash.toFixed(2)} recomputed from trades`);
-    else if (overdue) push("Paper trading", "error", `${overdue} open position(s) past their exit time`);
-    else push("Paper trading", "ok", `portfolio $${(snap.total_value as number).toFixed(2)} (start $${cfg.starting_balance}); books balance; ${open} open, ${closed} closed trades${trades.length === 0 ? "; no BUY signal has fired yet" : ""}`);
-  }
+  const m1rows = await db`select symbol, max(ts) newest from candles where granularity = 60 group by symbol`.catch(() => []);
+  const stalestCandle = m1rows.length ? Math.max(...m1rows.map((r) => ageMin(r.newest as Date))) : Infinity;
+  if (m1rows.length < 3) push("1-minute candles", "waiting", "not stored for every coin yet: run `scalp-train` once, then the worker keeps them current");
+  else if (stalestCandle > 8) push("1-minute candles", "error", `the stalest coin's newest candle is ${fmt(stalestCandle)} old: the scalper cannot trade on stale data`);
+  else push("1-minute candles", "ok", `all 3 coins current (stalest ${fmt(stalestCandle)} old)`);
 
-  // ---- evaluation engine
-  const [ev] = await db`select count(*) filter (where r.prediction_id is null and p.target_time < now() - interval '15 minutes')::int overdue,
-                          count(*) filter (where r.prediction_id is null)::int pending, count(r.prediction_id)::int scored, min(p.target_time) filter (where r.prediction_id is null) nxt
-                          from predictions p left join prediction_results r on r.prediction_id = p.id`;
-  if (ev.overdue > 0) push("Evaluation engine", "error", `${ev.overdue} prediction(s) past their 24h/48h window without a result`);
-  else if (ev.scored === 0) push("Evaluation engine", ev.pending ? "waiting" : "waiting", `nothing has reached its window yet; ${ev.pending} pending, first resolves ${ev.nxt ? new Date(ev.nxt as Date).toUTCString() : "n/a"}`);
-  else push("Evaluation engine", "ok", `${ev.scored} scored, ${ev.pending} pending, none overdue`);
-  // ---- real-time watcher: is anything checking for sudden events?
-  const [sig] = await db`select max(created_at) t, count(*)::int n, count(*) filter (where trigger_kind <> 'scheduled')::int events from live_signals`;
-  const [lastSrc] = await db`select max(last_polled_at) t from source_registry`;
-  const lastCheck = Math.min(ageMin(snap?.ts as Date), ageMin(lastSrc?.t as Date));
-  if (!Number.isFinite(lastCheck)) push("Real-time watcher", "waiting", "the worker has not run yet");
-  else if (lastCheck > 90) push("Real-time watcher", "error", `last check ${fmt(lastCheck)} ago: sudden events are not being watched`);
-  else push("Real-time watcher", "ok", `checked ${fmt(lastCheck)} ago; ${sig.events} sudden-event signals and ${sig.n - sig.events} regular reads recorded. Latency is the run interval (use \`watch\` for ~1 min).`);
+  const [mdl] = await db`select id, threshold, created_at from scalp_models where is_active`.catch(() => []);
+  const retrain = ((st("retrain_log") ?? []) as unknown as { at: string; decision: string; reason?: string }[]);
+  const lastTrain = retrain[retrain.length - 1];
+  if (!mdl) push("Trade-outcome model", "waiting", `no active model yet, so the scalper is not trading${lastTrain ? ` (last check: ${lastTrain.decision}${lastTrain.reason ? `: ${lastTrain.reason}` : ""})` : ". Run \`python -m crypto_ai.cli scalp-train\` once"}`);
+  else if (mdl.threshold == null) push("Trade-outcome model", "waiting", "active, but no edge threshold earned a positive net result out-of-sample, so it deliberately does not trade");
+  else push("Trade-outcome model", "ok", `model #${mdl.id} active, edge threshold ${(mdl.threshold as number).toFixed(2)}%, trained ${fmt(ageMin(mdl.created_at as Date))} ago`);
+
+  const [sg] = await db`select count(*)::int n, count(*) filter (where status = 'pending')::int pend, count(*) filter (where status = 'pending' and decision_ts < now() - interval '10 minutes')::int stuck,
+                          count(*) filter (where status = 'confirmed')::int conf, count(*) filter (where status = 'failed')::int fail, count(*) filter (where status = 'blocked')::int blocked,
+                          count(*) filter (where graded_at is not null)::int graded,
+                          count(*) filter (where graded_at is null and status <> 'pending' and decision_ts < now() - make_interval(mins => ${cfg.scalp_hold_bars + 30}))::int lag
+                         from scalp_signals where decision_ts > now() - interval '7 days'`.catch(() => [null]);
+  if (!sg) push("Predictions and confirmation", "waiting", "run `supabase/schema_scalp.sql` in Supabase to create the scalp_signals table");
+  else if (sg.stuck > 0) push("Predictions and confirmation", "error", `${sg.stuck} prediction(s) have been waiting for their next-candle confirmation for over 10 minutes: the worker is not resolving them`);
+  else push("Predictions and confirmation", sg.n ? "ok" : "waiting", sg.n ? `last 7 days: ${sg.n} predictions: ${sg.conf} confirmed and traded, ${sg.fail} refused by the next candle, ${sg.blocked} blocked by a risk/news/liquidity gate, ${sg.pend} waiting` : "no prediction has cleared the model's threshold yet (normal while the model finds no edge)");
+  if (sg) push("Prediction grading", sg.lag > 0 ? "error" : sg.n ? "ok" : "waiting", sg.lag > 0 ? `${sg.lag} finished prediction(s) are still ungraded: the learning step is behind` : sg.n ? `${sg.graded} of ${sg.n} graded right/wrong against what the market did afterwards (only candles after the decision are used)` : "nothing to grade yet");
+
+  // ---- the paper book: invariants that must always hold
+  const open = await db`select symbol, direction, notional, stop_px, initial_stop_px, entry_mid, take_profit_px, opened_at from scalp_trades where status = 'open'`.catch(() => []);
+  const [pl] = await db`select coalesce(sum(net_pnl_usd), 0)::float net, count(*)::int n,
+                         count(*) filter (where abs(gross_pnl_usd - slippage_usd - fees_usd - net_pnl_usd) > 1e-6 * greatest(1, abs(gross_pnl_usd)))::int off
+                        from scalp_trades where status = 'closed'`.catch(() => [{ net: 0, n: 0, off: 0 }]);
+  const equity = cfg.starting_balance + (pl?.net ?? 0);
+  const exposure = open.reduce((a, t) => a + (t.notional as number), 0);
+  const widened = open.filter((t) => (t.direction === "long" ? (t.stop_px as number) < (t.initial_stop_px as number) - 1e-9 : (t.stop_px as number) > (t.initial_stop_px as number) + 1e-9)).length;
+  const overdue = open.filter((t) => ageMin(t.opened_at as Date) > cfg.scalp_hold_bars + 10 && beat.tone === "ok").length;
+  if (pl?.off) push("Paper trading", "error", `${pl.off} closed trade(s) whose gross - slippage - fees does not equal the booked net: the books are wrong`);
+  else if (widened) push("Paper trading", "error", `${widened} open trade(s) had their stop moved wider (a stop may only tighten)`);
+  else if (overdue) push("Paper trading", "error", `${overdue} open trade(s) are past their time exit`);
+  else if (exposure > Math.max(equity, 1) * (cfg.scalp_max_exposure_pct / 100) * 1.02) push("Paper trading", "error", `open exposure $${exposure.toFixed(2)} exceeds the ${cfg.scalp_max_exposure_pct}% cap on $${equity.toFixed(2)}`);
+  else push("Paper trading", "ok", `paper account $${equity.toFixed(2)} (start $${cfg.starting_balance}); books balance on ${pl?.n ?? 0} closed trades; ${open.length} open, exposure $${exposure.toFixed(2)} of the ${cfg.scalp_max_exposure_pct}% cap`);
 
   // ---- self-learning
-  const [lr] = await db`select (select count(*)::int from post_mortems) pm, (select count(*)::int from prediction_results r where r.signal_correct = false) wrong,
-                         (select count(*)::int from prediction_results r left join post_mortems m on m.prediction_id = r.prediction_id where r.signal_correct = false and m.id is null) missing,
-                         (select count(*)::int from learned_patterns) pats, (select count(*)::int from model_challenges) ch`;
-  if (lr.missing > 5) push("Self-learning", "error", `${lr.missing} wrong predictions have no post-mortem yet: the learning job is behind`);
-  else push("Self-learning", lr.wrong === 0 ? "waiting" : "ok", lr.wrong === 0 ? "no wrong predictions to learn from yet" : `${lr.pm} post-mortems for ${lr.wrong} wrong predictions; ${lr.pats} patterns tracked; ${lr.ch} retrain attempts (models only change if a challenger wins on unseen data)`);
+  const [lr] = await db`select (select count(*)::int from scalp_lessons) lessons,
+                         (select count(*)::int from scalp_trades t left join scalp_lessons l on l.trade_id = t.id where t.status = 'closed' and l.id is null and t.closed_at < now() - interval '5 minutes') missing`.catch(() => [null]);
+  const learnLast = (st("learn_last") as { at?: string } | undefined)?.at;
+  if (!lr) push("Self-learning", "waiting", "scalper tables are missing");
+  else if (lr.missing > 0) push("Self-learning", "error", `${lr.missing} closed trade(s) have no post-mortem lesson: the learning job is behind`);
+  else push("Self-learning", lr.lessons || learnLast ? "ok" : "waiting", `${lr.lessons} trade lessons; ${sg?.graded ?? 0} graded predictions; last analysis ${learnLast ? fmt(ageMin(learnLast)) + " ago" : "not yet (runs 05:00-23:59 local time)"}; every retrain is a guarded champion/challenger test on unseen data`);
+
+  // ---- the old 24h/48h prediction engine
+  push("Old 24h/48h prediction engine", "unused", "retired: it no longer predicts or trades (the scalper replaced it), so its checks are not run. Old predictions stay in the database for reference.");
+  // ---- news: information for the dashboard AND context the scalper weighs before every trade
+  const [sig] = await db`select max(created_at) t, count(*)::int n, count(*) filter (where trigger_kind <> 'scheduled')::int events from live_signals`.catch(() => [{ t: null, n: 0, events: 0 }]);
+  const [lastSrc] = await db`select max(last_polled_at) t from source_registry`;
+  const lastCheck = ageMin(lastSrc?.t as Date);
+  if (!Number.isFinite(lastCheck)) push("News watcher", "waiting", "the worker has not polled any news source yet");
+  else if (lastCheck > 90) push("News watcher", "error", `last news poll ${fmt(lastCheck)} ago: the scalper is not seeing fresh news`);
+  else push("News watcher", "ok", `news sources polled ${fmt(lastCheck)} ago; ${sig?.events ?? 0} sudden-event alerts recorded. The scalper reads the same news, weighs it by source credibility and independent confirmation, and blocks or shrinks a trade when it conflicts.`);
   return out;
 }

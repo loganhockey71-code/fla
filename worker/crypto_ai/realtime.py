@@ -13,8 +13,6 @@ each signal so their outcomes can be measured like everything else.
 """
 from datetime import datetime, timedelta, timezone
 
-import pandas as pd
-
 from . import coinbase
 from .config import PRODUCTS, SHORT_HORIZON_H, SYMBOLS
 from .db import JsonList

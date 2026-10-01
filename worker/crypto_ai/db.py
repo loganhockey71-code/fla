@@ -3,7 +3,7 @@ import psycopg2
 import psycopg2.extensions
 import psycopg2.extras
 
-from .config import DEFAULT_SETTINGS, database_url
+from .config import database_url, merge_settings
 
 psycopg2.extras.register_uuid()
 # numpy scalars (from pandas) must reach Postgres as plain numbers
@@ -70,7 +70,4 @@ class DB:
                 psycopg2.extras.execute_values(cur, sql, rows, page_size=1000)
 
     def settings(self) -> dict:
-        cfg = dict(DEFAULT_SETTINGS)
-        for r in self.all("select key, value from settings"):
-            cfg[r["key"]] = r["value"]
-        return cfg
+        return merge_settings({r["key"]: r["value"] for r in self.all("select key, value from settings")})

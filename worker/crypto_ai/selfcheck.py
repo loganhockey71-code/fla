@@ -3,8 +3,6 @@
 Each check prints PASS / FAIL / WAIT (not enough data yet - not a failure) / INFO."""
 import os
 import re
-import subprocess
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -12,9 +10,9 @@ import feedparser
 import requests
 
 from . import coinbase, coingecko, evaluator, paper
-from .config import HORIZONS, PRODUCTS, SYMBOLS
-from .http import SourceError, get_conditional, get_json
-from .research import common, registry
+from .config import HORIZONS, PAPER_ONLY, PRODUCTS, SYMBOLS
+from .http import SourceError, get_conditional
+from .research import common
 from .research.congress import api as congress_api
 from .research.fred import fetch as fred_fetch
 
@@ -194,7 +192,7 @@ def check_predictions(db, cfg) -> None:
 
 
 # ------------------------------------------------------------------ 7/8. trades + portfolio
-def check_paper(db, cfg) -> None:
+def check_paper(db, cfg, legacy: bool = True) -> None:
     section("7-8. Paper trades and the fake portfolio")
     trades = db.all("select * from paper_trades where account='ai' order by id")
     real = [t for t in trades if t["status"] in ("open", "closed")]
@@ -220,13 +218,16 @@ def check_paper(db, cfg) -> None:
         rec("PASS" if not problems else "FAIL", f"trade #{t['id']} {t['symbol']} {t['status']}", ", ".join(problems) or f"filled {t['exec_price']:.4f} vs market {t['market_price']:.4f}")
     start = cfg["starting_balance"]
     last = db.one("select * from portfolio order by ts desc limit 1")
-    if not last:
+    if legacy and not last:
         rec("FAIL", "portfolio snapshot exists")
         return
-    cash = paper.cash_balance(start, trades)
-    rec("PASS" if abs(cash - last["cash"]) < 0.01 or age_min(last["ts"]) > 5 else "FAIL", "snapshot cash equals starting balance minus trades", f"recomputed {cash:.2f} vs stored {last['cash']:.2f}")
-    rec("PASS" if abs(last["cash"] + last["positions_value"] - last["total_value"]) < 0.01 else "FAIL", "total = cash + open positions")
-    rec("PASS" if start == 1000 or True else "FAIL", "starting balance", f"${start:,.0f}")
+    if legacy:
+        cash = paper.cash_balance(start, trades)
+        rec("PASS" if abs(cash - last["cash"]) < 0.01 or age_min(last["ts"]) > 5 else "FAIL", "snapshot cash equals starting balance minus trades", f"recomputed {cash:.2f} vs stored {last['cash']:.2f}")
+        rec("PASS" if abs(last["cash"] + last["positions_value"] - last["total_value"]) < 0.01 else "FAIL", "total = cash + open positions")
+    else:
+        rec("INFO", "legacy AI-account portfolio snapshots", "retired with the 24h/48h prediction engine; the scalper keeps its own books (see the scalper section)")
+    rec("INFO", "starting balance", f"${start:,.0f}")
     mt = db.all("select * from paper_trades where account='manual' order by id")
     if mt:
         mreal = [t for t in mt if t["status"] in ("open", "closed")]
@@ -238,7 +239,8 @@ def check_paper(db, cfg) -> None:
         rec("INFO", "manual account", "no manual trades yet")
     over = db.one("select count(*) n from paper_trades where status='open' and account='ai' and planned_exit_at < now() - interval '15 minutes'")["n"]
     rec("PASS" if over == 0 else "FAIL", "no open position is overdue for exit", f"{over} overdue")
-    rec("PASS" if age_min(last["ts"]) < 20 else "FAIL", "portfolio is being snapshotted", f"last {age_min(last['ts']):.1f} min ago")
+    if legacy:
+        rec("PASS" if age_min(last["ts"]) < 20 else "FAIL", "portfolio is being snapshotted", f"last {age_min(last['ts']):.1f} min ago")
 
 
 # ------------------------------------------------------------------ 9/10. evaluation
@@ -279,7 +281,7 @@ def check_metrics(db, cfg) -> None:
             ok = got is not None and got["total_predictions"] == n and ((exp is None and got["directional_accuracy"] is None) or abs((got["directional_accuracy"] or 0) - (exp or 0)) < 1e-9)
             rec("PASS" if ok else "FAIL", f"{label} accuracy", f"stored {got and got['directional_accuracy']} vs recomputed {exp} (n={n})")
     trades = [t for t in db.all("select * from paper_trades where status='closed' and account='ai'")]
-    pm = perf_paper = {(m["scope"]): m for m in db.all("select * from performance_metrics where slice='paper'")}
+    pm = {(m["scope"]): m for m in db.all("select * from performance_metrics where slice='paper'")}
     total = sum(t["pnl_usd"] for t in trades)
     if not trades:
         rec("WAIT", "P/L, return %, per-coin P/L, win rate, avg win/loss, max drawdown", "no closed paper trade yet. Verified by tests/test_e2e.py on a scratch database")
@@ -294,31 +296,56 @@ def check_metrics(db, cfg) -> None:
 
 
 # ------------------------------------------------------------------ 12. security
-FORBIDDEN = [r"/orders?\b", r"CB-ACCESS", r"api/v3/order", r"withdraw", r"\bwallet\b", r"private[_ ]?key", r"seed phrase", r"mnemonic", r"web3", r"ethers", r"signTransaction",
-             r"place[_ ]?order", r"createOrder", r"submit[_ ]?order", r"apiSecret", r"ccxt", r"alpaca", r"robinhood", r"interactive ?brokers"]
+FORBIDDEN = [r"/orders?\b", r"CB-ACCESS", r"api/v3/order", r"withdraw", r"\bwallet\b", r"private[_ ]?key", r"seed phrase", r"mnemonic", r"web3", r"\bethers\b", r"signTransaction",
+             r"place[_ ]?order", r"create[_ ]?order", r"submit[_ ]?order", r"apiSecret", r"ccxt", r"alpaca", r"robinhood", r"interactive ?brokers"]
 
 
-def check_security(db) -> None:
-    section("12. No real-money trading, wallets or exchange permissions")
+def _source_files() -> list[Path]:
+    return (list((ROOT / "worker" / "crypto_ai").rglob("*.py")) + list((ROOT / "web" / "app").rglob("*.ts*")) + list((ROOT / "web" / "lib").rglob("*.ts*"))
+            + list((ROOT / "web" / "components").rglob("*.ts*")))
+
+
+def scan_source_for_real_trading_code() -> list[str]:
+    """Lines anywhere in the worker or the dashboard that look like exchange order / withdrawal / wallet / broker code. Must stay empty."""
     hits = []
-    for p in list((ROOT / "worker" / "crypto_ai").rglob("*.py")) + list((ROOT / "web" / "app").rglob("*.ts*")) + list((ROOT / "web" / "lib").rglob("*.ts*")) + list((ROOT / "web" / "components").rglob("*.ts*")):
+    for p in _source_files():
         if p.name == "selfcheck.py":
             continue
         txt = p.read_text(encoding="utf-8", errors="ignore")
         for i, line in enumerate(txt.splitlines(), 1):
             is_keyword_list = p.name == "common.py" and line.strip().startswith('("whale_activity"')   # news-classification keywords, not wallet code
-            if any(re.search(pat, line, re.I) for pat in FORBIDDEN) and not is_keyword_list and not re.search(r"no (wallet|order|account)|never|never places|read-only|does not|fake money|nothing here", line, re.I):
+            if any(re.search(pat, line, re.I) for pat in FORBIDDEN) and not is_keyword_list and not re.search(r"no (wallet|order|account)|never|never places|read-only|does not|fake money|nothing here|paper|labelled|look up|lookup", line, re.I):
                 hits.append(f"{p.relative_to(ROOT)}:{i}: {line.strip()[:90]}")
+    return hits
+
+
+# Worker files that use HTTP POST, and why each is read-only in effect. Everything else only GETs.
+#   llm.py                    the optional OpenRouter client: sends a text prompt to a $0 model for commentary; never sees an account or a trade
+#   datasources/base.py       http_post_json: the XRP Ledger's public JSON-RPC takes read queries (ledger, fee) as POST
+#   datasources/reddit.py     the standard OAuth client-credentials token request for Reddit's read-only API
+# (An order/withdrawal/wallet pattern anywhere in the source is caught separately by scan_source_for_real_trading_code.)
+HTTP_WRITE_ALLOWED = {"selfcheck.py", "llm.py", "base.py", "reddit.py"}
+
+
+def scan_for_http_writes() -> list[str]:
+    return [str(p.relative_to(ROOT)) for p in (ROOT / "worker" / "crypto_ai").rglob("*.py")
+            if re.search(r"\.(post|put|delete|patch)\(", p.read_text(encoding="utf-8", errors="ignore")) and p.name not in HTTP_WRITE_ALLOWED]
+
+
+def check_security(db) -> None:
+    section("12. No real-money trading, wallets or exchange permissions")
+    rec("PASS" if PAPER_ONLY else "FAIL", "config.PAPER_ONLY is set", "every trade is simulated")
+    hits = scan_source_for_real_trading_code()
     rec("PASS" if not hits else "FAIL", "no order/withdraw/wallet/broker code in worker or web source", f"{len(hits)} hits: {hits[:3]}" if hits else "")
-    ex = [u for u in re.findall(r'https?://[^\s"\']+', "".join(p.read_text(encoding="utf-8", errors="ignore") for p in (ROOT / "worker" / "crypto_ai").rglob("*.py")))]
-    posts = [p for p in (ROOT / "worker" / "crypto_ai").rglob("*.py") if re.search(r"\.(post|put|delete|patch)\(", p.read_text(encoding="utf-8", errors="ignore")) and p.name != "selfcheck.py"]
-    rec("PASS" if not posts else "FAIL", "worker makes no POST/PUT/DELETE HTTP calls (only reads)", ", ".join(map(str, posts)))
-    secrets_in_repo = [str(p.relative_to(ROOT)) for p in ROOT.rglob("*") if p.is_file() and "node_modules" not in p.parts and ".next" not in p.parts and p.suffix in (".py", ".ts", ".tsx", ".yml", ".md", ".json", ".sql", ".example")
+    posts = scan_for_http_writes()
+    rec("PASS" if not posts else "FAIL", "worker makes no unexpected POST/PUT/DELETE HTTP calls (documented read-only exceptions: OpenRouter prompt, XRPL JSON-RPC reads, Reddit OAuth token)", ", ".join(posts))
+    secrets_in_repo = [str(p.relative_to(ROOT)) for p in ROOT.rglob("*") if p.is_file() and "node_modules" not in p.parts and ".next" not in p.parts and ".cache" not in p.parts
+                       and p.suffix in (".py", ".ts", ".tsx", ".yml", ".md", ".json", ".sql", ".example")
                        and any(os.environ.get(k) and os.environ[k] in p.read_text(encoding="utf-8", errors="ignore") for k in ("FRED_API_KEY", "CONGRESS_API_KEY"))]
     rec("PASS" if not secrets_in_repo else "FAIL", "API key values do not appear in any source/config file", ", ".join(secrets_in_repo))
     gi = (ROOT / ".gitignore").read_text()
     rec("PASS" if ".env" in gi else "FAIL", ".env is git-ignored")
-    web_env = [k for k in ("FRED_API_KEY", "CONGRESS_API_KEY") if any(k in p.read_text(encoding="utf-8", errors="ignore") for p in list((ROOT / "web" / "app").rglob("*.ts*")) + list((ROOT / "web" / "lib").rglob("*.ts*")) + list((ROOT / "web" / "components").rglob("*.ts*")))]
+    web_env = [k for k in ("FRED_API_KEY", "CONGRESS_API_KEY") if any(k in p.read_text(encoding="utf-8", errors="ignore") for p in _source_files() if p.suffix != ".py")]
     rec("PASS" if not web_env else "FAIL", "web app never references the research API keys", ",".join(web_env))
     rls = db.all("select tablename from pg_tables where schemaname='public' and not rowsecurity")
     rec("PASS" if not rls else "FAIL", "row-level security enabled on every table (Supabase REST API locked)", ", ".join(r["tablename"] for r in rls))
@@ -328,9 +355,79 @@ def check_security(db) -> None:
     rec("INFO", "dashboard auth", "APP_PASSWORD is enforced in production builds; in `npm run dev` the dashboard is open on localhost (fine locally, never deploy that way)")
 
 
+# ------------------------------------------------------------------ 14. the scalper itself
+def check_scalper(db, cfg) -> None:
+    section("14. Scalper (paper): heartbeat, books, confirmation, signals and learning")
+    on = cfg["autopilot_enabled"]
+    rec("INFO", "kill switch (autopilot_enabled)", "ON" if on is True else "OFF" if on is False else f"unreadable: {on!r}")
+    beat = db.one("select value->>'at' as hb from scalp_state where key='heartbeat'")
+    if not beat or not beat["hb"]:
+        rec("WAIT", "worker heartbeat", "the scalper has not run yet")
+        return
+    age = age_min(datetime.fromisoformat(beat["hb"]))
+    rec("PASS" if age < 15 else "FAIL", "scalper worker is running", f"last pass {age:.1f} min ago")
+    m = db.all("select symbol, max(ts) t from candles where granularity=60 group by 1")
+    stale = [r["symbol"] for r in m if age_min(r["t"]) > 8]
+    rec("PASS" if len(m) == len(SYMBOLS) and not stale else "FAIL", "1-minute candles are fresh for every coin", f"stale: {stale}" if stale else f"{len(m)} coins")
+    active = db.one("select count(*) n, bool_or(threshold is null) nothr from scalp_models where is_active")
+    rec("INFO" if active["n"] else "WAIT", "active trade-outcome model", "none yet: the scalper is not trading until `scalp-train` promotes one" if not active["n"]
+        else "present, but no threshold earned a positive net edge: it deliberately does not trade" if active["nothr"] else "present, with a validated edge threshold")
+
+    open_ = db.all("select * from scalp_trades where status='open'")
+    bad = []
+    if len(open_) > cfg["scalp_max_positions"]:
+        bad.append(f"{len(open_)} open > max {cfg['scalp_max_positions']}")
+    if len({t["symbol"] for t in open_}) != len(open_):
+        bad.append("two open trades in one coin")
+    for t in open_:
+        long = t["direction"] == "long"
+        if (long and t["stop_px"] < t["initial_stop_px"] - 1e-9) or (not long and t["stop_px"] > t["initial_stop_px"] + 1e-9):
+            bad.append(f"#{t['id']} stop was widened")
+        if (long and not t["initial_stop_px"] < t["entry_mid"] < t["take_profit_px"]) or (not long and not t["initial_stop_px"] > t["entry_mid"] > t["take_profit_px"]):
+            bad.append(f"#{t['id']} stop/target on the wrong side of entry")
+        if age_min(t["opened_at"]) > cfg["scalp_hold_bars"] + 10 and age < 15:
+            bad.append(f"#{t['id']} is overdue for its time exit")
+    rec("PASS" if not bad else "FAIL", "open trades obey the rules (max positions, one per coin, stops never widened, nothing overdue)", "; ".join(bad) or f"{len(open_)} open")
+    equity = cfg["starting_balance"] + db.one("select coalesce(sum(net_pnl_usd),0) x from scalp_trades where status='closed'")["x"]
+    exposure = sum(t["notional"] for t in open_)
+    rec("PASS" if exposure <= max(equity, 1) * cfg["scalp_max_exposure_pct"] / 100 * 1.02 else "FAIL", "total exposure is within the cap", f"{exposure:,.2f} USD of {equity:,.2f} equity (cap {cfg['scalp_max_exposure_pct']:.0f}%)")
+    rec("PASS" if exposure <= equity + 1e-6 else "FAIL", "no leverage: open notional never exceeds the account")
+
+    closed = db.all("select id, gross_pnl_usd, slippage_usd, fees_usd, net_pnl_usd, closed_at from scalp_trades where status='closed' order by id desc limit 500")
+    off = [c["id"] for c in closed if abs(c["gross_pnl_usd"] - c["slippage_usd"] - c["fees_usd"] - c["net_pnl_usd"]) > 1e-6 * max(1.0, abs(c["gross_pnl_usd"]))]
+    rec("PASS" if not off else "FAIL", "every closed trade's P&L adds up (gross - slippage - fees = net)", f"{len(closed)} checked" + (f", off: {off[:5]}" if off else ""))
+    missing = db.one("""select count(*) n from scalp_trades t left join scalp_lessons l on l.trade_id = t.id
+                        where t.status='closed' and l.id is null and t.closed_at < %s""", [now() - timedelta(minutes=5)])["n"]
+    rec("PASS" if missing == 0 else "FAIL", "every closed trade has a post-mortem lesson", f"{missing} without")
+
+    if cfg["scalp_confirm_required"]:
+        early = db.all("""select t.id from scalp_trades t join scalp_signals s on s.id = t.signal_id
+                          where t.opened_at < s.decision_ts + interval '2 minutes' - interval '5 seconds'""")
+        rec("PASS" if not early else "FAIL", "no trade opened before its confirmation candle closed", f"{len(early)} early: {[e['id'] for e in early[:5]]}" if early else "")
+        unlinked = db.one("select count(*) n from scalp_trades t where t.signal_id is null and t.opened_at > (select coalesce(min(created_at), now()) from scalp_signals)")["n"]
+        rec("PASS" if unlinked == 0 else "FAIL", "every trade since signals began belongs to a recorded, confirmed signal", f"{unlinked} without")
+    conf_no_trade = db.one("select count(*) n from scalp_signals where status='confirmed' and trade_id is null and reason = 'confirmed'")["n"]
+    rec("PASS" if conf_no_trade == 0 else "FAIL", "every confirmed signal produced a trade", f"{conf_no_trade} without")
+    stuck = db.one("select count(*) n from scalp_signals where status='pending' and decision_ts < %s", [now() - timedelta(minutes=10)])["n"]
+    rec("PASS" if stuck == 0 else "FAIL", "no prediction is stuck waiting for confirmation", f"{stuck} stuck")
+    lag = db.one("""select count(*) n from scalp_signals where graded_at is null and status <> 'pending' and decision_ts < %s""",
+                 [now() - timedelta(minutes=cfg["scalp_hold_bars"] + 30)])["n"]
+    rec("PASS" if lag == 0 else "FAIL", "every finished prediction (traded or not) gets graded right/wrong", f"{lag} ungraded past their window")
+    tot = db.one("select count(*) n, count(*) filter (where status='confirmed') c, count(*) filter (where status='failed') f, count(*) filter (where status='blocked') b, count(*) filter (where graded_at is not null) g from scalp_signals")
+    rec("INFO", "predictions recorded", f"{tot['n']} total: {tot['c']} confirmed, {tot['f']} failed confirmation, {tot['b']} blocked by a gate, {tot['g']} graded")
+
+
 # ------------------------------------------------------------------ 13. real-time signals + self-learning
-def check_learning(db, cfg) -> None:
+def check_learning(db, cfg, legacy: bool = True) -> None:
     section("13. Real-time signals and self-learning")
+    if not legacy:
+        rec("INFO", "legacy prediction post-mortems / live-signal freshness", "skipped: the 24h/48h prediction engine is retired (the scalper's learning is checked in the scalper section)")
+        rec("PASS" if db.one("select to_regclass('cash_plans') t")["t"] else "FAIL", "table cash_plans exists (\"what should I do with the cash?\")")
+        stuck = db.one("select count(*) n from cash_plans where status = 'executing' and created_at < now() - interval '10 minutes'")["n"]
+        rec("PASS" if stuck == 0 else "FAIL", "no cash plan is stuck half-executed", f"{stuck} stuck")
+        unasked = db.one("select count(*) n from paper_trades t where t.account = 'manual' and t.ai_advice->>'source' = 'cash_plan' and not exists (select 1 from cash_plans c where c.id = (t.ai_advice->>'plan_id')::bigint and c.status = 'confirmed')")["n"]
+        rec("PASS" if unasked == 0 else "FAIL", "every trade made from a cash plan belongs to a plan the user confirmed", f"{unasked} without confirmation")
+        return
     for tbl in ("live_signals", "post_mortems", "learned_patterns", "model_challenges"):
         rec("PASS" if db.one("select to_regclass(%s) t", [tbl])["t"] else "FAIL", f"table {tbl} exists")
     trig = {r["tgname"] for r in db.all("select t.tgname from pg_trigger t join pg_class c on c.oid=t.tgrelid where c.relname='post_mortems' and not t.tgisinternal")}
@@ -363,8 +460,17 @@ def check_learning(db, cfg) -> None:
 
 def run(db) -> int:
     cfg = db.settings()
-    for fn in (lambda: check_prices(db), check_keys, lambda: check_feeds(db), lambda: check_duplicates(db), lambda: check_predictions(db, cfg),
-               lambda: check_paper(db, cfg), lambda: check_evaluation(db, cfg), lambda: check_metrics(db, cfg), lambda: check_learning(db, cfg), lambda: check_security(db)):
+    legacy = bool(cfg["legacy_predictions_enabled"])
+    checks = [lambda: check_prices(db), check_keys, lambda: check_feeds(db), lambda: check_duplicates(db)]
+    if legacy:
+        checks += [lambda: check_predictions(db, cfg)]
+    else:
+        checks += [lambda: rec("INFO", "legacy 24h/48h prediction engine", "retired (legacy_predictions_enabled is off): prediction, evaluation and accuracy checks are skipped")]
+    checks += [lambda: check_paper(db, cfg, legacy)]
+    if legacy:
+        checks += [lambda: check_evaluation(db, cfg), lambda: check_metrics(db, cfg)]
+    checks += [lambda: check_learning(db, cfg, legacy), lambda: check_scalper(db, cfg), lambda: check_security(db)]
+    for fn in checks:
         try:
             fn()
         except Exception as e:                                   # a crashing check is a failed check

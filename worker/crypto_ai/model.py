@@ -6,7 +6,6 @@ Training is walk-forward with an embargo gap so no training label overlaps the t
 The out-of-sample results are stored as BACKTEST metrics on the model version and are never
 mixed with live paper-trading results.
 """
-import math
 from datetime import datetime, timezone
 
 import lightgbm as lgb

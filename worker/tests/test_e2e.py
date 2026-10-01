@@ -46,7 +46,9 @@ def test_full_paper_trading_loop(db):
     from crypto_ai.db import JsonList
     from crypto_ai.predictor import micro_snapshot
 
-    cfg = db.settings()
+    # This drives the LEGACY prediction-driven paper engine (still used by the manual account). The pivot to the scalper retired it
+    # by default (trade_horizons = []), so this test switches it back on explicitly instead of relying on a database row.
+    cfg = {**db.settings(), "trade_horizons": [24, 48]}
     assert cfg["starting_balance"] == 1000 and cfg["trading_fee_pct"] == 0.4 and cfg["slippage_pct"] == 0.10
     fee, slip = cfg["trading_fee_pct"] / 100, cfg["slippage_pct"] / 100
     mid_id = db.insert("model_versions", {"symbol": "BTC", "version": "e2e-model", "feature_names": JsonList(["x"]), "model_blob": {"24": ""},

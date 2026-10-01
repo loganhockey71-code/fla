@@ -66,11 +66,18 @@ def test_dedupe_grouping_and_promotion_against_postgres():
             assert common.record_event(db, src[k], it(f"b{i}", title, f"http://x/b{i}")) == "duplicate"
         ev = db.one("select * from research_events where source_key='t_p1'")
         assert ev["duplicate_count"] == 3 and ev["independent_confirmations"] == 1
+        before = {c: ev[c] for c in ("btc_impact_score", "eth_impact_score", "xrp_impact_score")}
+        imp_before = ev["importance_score"]
+        assert before["eth_impact_score"] > 0                                             # a positive ETH story
         assert common.record_event(db, src["t_p1"], it("a1", "SEC approves first spot Ethereum ETF", "http://x/1")) is None      # re-poll: nothing new
         # the official release arrives late: it becomes the origin; media copies still don't count as confirmations
         assert common.record_event(db, src["t_gov"], it("g1", "SEC approves spot Ethereum ETF listings", "http://sec/1")) == "duplicate"
         ev = db.one("select * from research_events where id=%s", [ev["id"]])
         assert ev["origin_tier"] == 1 and ev["source_key"] == "t_gov" and ev["event_probability"] == 1.0
+        assert ev["importance_score"] > imp_before                                          # promoted to the official origin: more important ...
+        ratio = ev["importance_score"] / imp_before
+        for c, was in before.items():                                                       # ... and every coin's impact score moved with it (regression: they used to stay stale)
+            assert ev[c] == min(100, max(-100, round(was * ratio))) and abs(ev[c]) >= abs(was)
         assert ev["independent_confirmations"] == 2 and ev["duplicate_count"] == 4        # primary + press, not 5
         assert common.record_event(db, src["t_p1"], it("a1", "SEC approves first spot Ethereum ETF", "http://x/1")) is None      # old origin isn't re-created
     finally:
