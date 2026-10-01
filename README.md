@@ -29,7 +29,7 @@ worker/crypto_ai/     Python worker + ML            .github/workflows/  free sch
    - *Your own machine* (a guaranteed cadence, unlike GitHub's best-effort scheduler): `python -m crypto_ai.cli scalp --every 20`
 4. **Dashboard**: import the repo in Vercel, root directory `web`, env vars `DATABASE_URL` and `APP_PASSWORD` (not the research keys: the dashboard never uses them). The site refuses to serve without a password.
 
-Local dashboard: `cd web && npm install && npm run dev` (needs `DATABASE_URL`).
+Local dashboard: `cd web && npm install && npm run dev` (needs `DATABASE_URL`), served at **http://localhost:3001**.
 
 ## The scalper
 Code: `worker/crypto_ai/scalp/`. Dashboard: **Trades > Scalper**. Everything is paper trading.
